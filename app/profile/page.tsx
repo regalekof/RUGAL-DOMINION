@@ -85,12 +85,32 @@ const ACHIEVEMENTS: Achievement[] = [
   {
     id: 'arena_champion',
     name: 'Arena Champion',
-    description: 'Reach 1000 total points',
+    description: 'Reach 10,000 total points',
     icon: <Crown className="h-5 w-5 text-yellow-400" />,
-    points: 1000,
+    points: 10000,
     unlocked: false,
     progress: 0,
-    maxProgress: 1000
+    maxProgress: 10000
+  },
+  {
+    id: 'arena_warrior',
+    name: 'Arena Warrior',
+    description: 'Reach 100,000 total points',
+    icon: <Crown className="h-5 w-5 text-orange-400" />,
+    points: 100000,
+    unlocked: false,
+    progress: 0,
+    maxProgress: 100000
+  },
+  {
+    id: 'arena_legend',
+    name: 'Arena Legend',
+    description: 'Reach 1,000,000 total points',
+    icon: <Crown className="h-5 w-5 text-red-400" />,
+    points: 1000000,
+    unlocked: false,
+    progress: 0,
+    maxProgress: 1000000
   }
 ]
 
@@ -233,8 +253,16 @@ export default function ProfilePage() {
           unlocked = stats.absorbs >= 20
           break
         case 'arena_champion':
-          progress = Math.min(stats.points, 1000)
-          unlocked = stats.points >= 1000
+          progress = Math.min(stats.points, 10000)
+          unlocked = stats.points >= 10000
+          break
+        case 'arena_warrior':
+          progress = Math.min(stats.points, 100000)
+          unlocked = stats.points >= 100000
+          break
+        case 'arena_legend':
+          progress = Math.min(stats.points, 1000000)
+          unlocked = stats.points >= 1000000
           break
       }
 
@@ -243,8 +271,8 @@ export default function ProfilePage() {
   }
 
   const getNextMilestone = (points: number) => {
-    const milestones = [100, 250, 500, 1000, 2500, 5000, 10000]
-    return milestones.find(milestone => milestone > points) || 10000
+    const milestones = [100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000]
+    return milestones.find(milestone => milestone > points) || 1000000
   }
 
   if (!connected) {
