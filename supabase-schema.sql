@@ -2,6 +2,8 @@
 CREATE TABLE IF NOT EXISTS leaderboard_entries (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   wallet TEXT UNIQUE NOT NULL,
+  username TEXT UNIQUE,
+  profile_picture TEXT,
   points INTEGER DEFAULT 0,
   absorbs INTEGER DEFAULT 0,
   token_burns INTEGER DEFAULT 0,
@@ -19,6 +21,7 @@ CREATE TABLE IF NOT EXISTS leaderboard_entries (
 -- Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_leaderboard_points ON leaderboard_entries(points DESC);
 CREATE INDEX IF NOT EXISTS idx_leaderboard_wallet ON leaderboard_entries(wallet);
+CREATE INDEX IF NOT EXISTS idx_username ON leaderboard_entries(username);
 CREATE INDEX IF NOT EXISTS idx_referral_code ON leaderboard_entries(referral_code);
 CREATE INDEX IF NOT EXISTS idx_referred_by ON leaderboard_entries(referred_by);
 

@@ -9,10 +9,13 @@ import { Trophy, Medal, Award, Crown, Flame, Zap, Eye, ArrowLeft, Target, Star, 
 import Link from 'next/link'
 import { POINTS } from '@/components/leaderboard'
 import { supabase } from '@/lib/supabase-client'
+import UsernameSetup from '@/components/username-setup'
 
 interface UserStats {
   id: string
   wallet: string
+  username?: string
+  profile_picture?: string
   points: number
   absorbs: number
   token_burns: number
@@ -95,6 +98,7 @@ export default function ProfilePage() {
   const { publicKey, connected } = useWallet()
   const [userStats, setUserStats] = useState<UserStats | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [showUsernameSetup, setShowUsernameSetup] = useState(false)
 
   useEffect(() => {
     if (!publicKey) {
@@ -122,6 +126,13 @@ export default function ProfilePage() {
           const userEntry = allEntries?.find(entry => entry.wallet === publicKey.toString())
           if (userEntry) {
             setUserStats(userEntry)
+            // Check if username setup is needed
+            if (!userEntry.username) {
+              setShowUsernameSetup(true)
+            }
+          } else {
+            // User doesn't exist, show username setup
+            setShowUsernameSetup(true)
           }
         } else {
           // Fallback to localStorage when Supabase is not configured
@@ -281,6 +292,29 @@ export default function ProfilePage() {
 
   const currentStats = userStats || defaultStats
 
+  // Show username setup if needed
+  if (showUsernameSetup) {
+    return (
+      <div className="relative min-h-screen bg-gradient-to-br from-gray-900 via-red-900/20 to-purple-900/20">
+        <SiteHeader />
+        <main className="container relative py-12">
+          <div className="flex items-center mb-8">
+            <Link href="/" className="flex items-center text-red-400/80 hover:text-primary transition-colors">
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Back to Arena
+            </Link>
+          </div>
+          <div className="flex justify-center">
+            <UsernameSetup onComplete={() => {
+              setShowUsernameSetup(false)
+              loadUserStats() // Reload stats after setup
+            }} />
+          </div>
+        </main>
+      </div>
+    )
+  }
+
   return (
     <div className="relative min-h-screen bg-gradient-to-br from-gray-900 via-red-900/20 to-purple-900/20">
       <SiteHeader />
@@ -302,13 +336,23 @@ export default function ProfilePage() {
                 <div className="flex items-center space-x-6">
                   <div className="relative">
                     <div className="w-24 h-24 rounded-full bg-gradient-to-r from-red-500 to-purple-500 p-1">
-                      <div className="w-full h-full rounded-full bg-gray-900 flex items-center justify-center">
-                        <Trophy className="h-8 w-8 text-red-400" />
+                      <div className="w-full h-full rounded-full bg-gray-900 flex items-center justify-center overflow-hidden">
+                        {currentStats.profile_picture ? (
+                          <img 
+                            src={currentStats.profile_picture} 
+                            alt="Profile" 
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <Trophy className="h-8 w-8 text-red-400" />
+                        )}
                       </div>
                     </div>
                   </div>
                   <div>
-                    <h1 className="text-4xl font-bold power-text mb-2">Warrior Profile</h1>
+                    <h1 className="text-4xl font-bold power-text mb-2">
+                      {currentStats.username || 'Anonymous Warrior'}
+                    </h1>
                     {currentStats.points === 0 ? (
                       <div>
                         <p className="text-red-400/80 text-lg mb-2">
