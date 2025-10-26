@@ -103,7 +103,7 @@ export const SiteHeader: FC = () => {
                 <div 
                   className="relative cursor-pointer group"
                   onClick={handleProfilePictureClick}
-                  title={userProfile?.username ? `Change ${userProfile.username}'s picture` : 'Setup profile'}
+                  title={userProfile?.username ? `Change ${userProfile.username}'s picture` : 'Setup username required'}
                 >
                   <div className="w-10 h-10 rounded-full bg-gray-800/50 border border-gray-700 flex items-center justify-center overflow-hidden hover:border-red-500/50 transition-all duration-200">
                     {userProfile?.profile_picture ? (

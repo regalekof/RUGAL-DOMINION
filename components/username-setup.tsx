@@ -26,11 +26,13 @@ export default function UsernameSetup({ onComplete }: UsernameSetupProps) {
       return
     }
 
+    console.log('🔍 Checking username availability:', username.toLowerCase().trim())
     setIsCheckingUsername(true)
     try {
       if (!supabase) {
         // Fallback - check localStorage
-        const existing = localStorage.getItem(`username_${username}`)
+        const existing = localStorage.getItem(`username_${username.toLowerCase().trim()}`)
+        console.log('🔍 localStorage check result:', existing ? 'TAKEN' : 'AVAILABLE')
         setUsernameAvailable(!existing)
         setIsCheckingUsername(false)
         return
@@ -39,16 +41,21 @@ export default function UsernameSetup({ onComplete }: UsernameSetupProps) {
       const { data, error } = await supabase
         .from('leaderboard_entries')
         .select('username')
-        .eq('username', username.trim())
+        .eq('username', username.toLowerCase().trim())
         .single()
+
+      console.log('🔍 Supabase query result:', { data, error })
 
       if (error && error.code === 'PGRST116') {
         // Username not found - available
+        console.log('✅ Username AVAILABLE')
         setUsernameAvailable(true)
       } else if (data) {
         // Username exists
+        console.log('❌ Username TAKEN')
         setUsernameAvailable(false)
       } else {
+        console.log('❌ Username TAKEN (fallback)')
         setUsernameAvailable(false)
       }
     } catch (error) {
@@ -65,7 +72,10 @@ export default function UsernameSetup({ onComplete }: UsernameSetupProps) {
     setUsernameAvailable(null)
     
     if (value.length >= 3) {
-      checkUsernameAvailability(value)
+      // Add a small delay to avoid too many API calls
+      setTimeout(() => {
+        checkUsernameAvailability(value)
+      }, 300)
     }
   }
 
@@ -115,12 +125,12 @@ export default function UsernameSetup({ onComplete }: UsernameSetupProps) {
         // Fallback to localStorage
         const userData = {
           wallet: publicKey?.toString(),
-          username: username.trim(),
+          username: username.toLowerCase().trim(),
           profile_picture: profilePictureUrl,
-          referral_code: username.trim()
+          referral_code: username.toLowerCase().trim()
         }
         localStorage.setItem(`user_${publicKey?.toString()}`, JSON.stringify(userData))
-        localStorage.setItem(`username_${username.trim()}`, 'taken')
+        localStorage.setItem(`username_${username.toLowerCase().trim()}`, 'taken')
         setIsLoading(false)
         onComplete()
         return
@@ -131,9 +141,9 @@ export default function UsernameSetup({ onComplete }: UsernameSetupProps) {
         .from('leaderboard_entries')
         .upsert({
           wallet: publicKey?.toString(),
-          username: username.trim(),
+          username: username.toLowerCase().trim(),
           profile_picture: profilePictureUrl,
-          referral_code: username.trim()
+          referral_code: username.toLowerCase().trim()
         })
 
       if (error) {
@@ -155,10 +165,16 @@ export default function UsernameSetup({ onComplete }: UsernameSetupProps) {
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-red-400">
           <User className="h-5 w-5" />
-          Create Your Profile
+          Create Your Username
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
+        <div className="text-sm text-gray-400 mb-4">
+          <p>• Username is <span className="text-red-400 font-semibold">required</span> to access your profile</p>
+          <p>• Profile picture is <span className="text-gray-500">optional</span></p>
+          <p>• Username becomes your referral code</p>
+        </div>
+        
         {/* Username Input */}
         <div className="space-y-2">
           <label className="text-sm font-medium text-white">Username</label>
@@ -243,7 +259,7 @@ export default function UsernameSetup({ onComplete }: UsernameSetupProps) {
           disabled={!username.trim() || !usernameAvailable || isLoading}
           className="w-full bg-red-600 hover:bg-red-700 text-white"
         >
-          {isLoading ? 'Creating Profile...' : 'Create Profile'}
+          {isLoading ? 'Creating Username...' : 'Create Username'}
         </Button>
 
         <div className="text-xs text-gray-400 text-center">
