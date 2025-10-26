@@ -384,8 +384,8 @@ export default function ProfilePage() {
                   <div className="flex items-center justify-center w-16 h-16 bg-gradient-to-r from-purple-500/20 to-pink-500/20 rounded-full mx-auto mb-4">
                     <Clock className="h-8 w-8 text-purple-400" />
                   </div>
-                  <h3 className="text-3xl font-bold text-white mb-2">{(currentStats.total_fees_paid / 1000000000).toFixed(3)}</h3>
-                  <p className="text-sm text-purple-400/60 font-medium">SOL Fees Paid</p>
+                  <h3 className="text-3xl font-bold text-white mb-2">{((currentStats.total_fees_paid * 49) / 1000000000).toFixed(3)}</h3>
+                  <p className="text-sm text-purple-400/60 font-medium">SOL Reclaimed</p>
                   <div className="mt-3 text-xs text-purple-400/60">
                     Last: {formatDate(currentStats.last_activity)}
                   </div>
@@ -590,12 +590,12 @@ export default function ProfilePage() {
                           <Coins className="h-5 w-5 text-yellow-400" />
                         </div>
                         <div>
-                          <h3 className="font-bold text-white">Fees Paid</h3>
-                          <p className="text-sm text-yellow-400/60">Total SOL contributed</p>
+                          <h3 className="font-bold text-white">SOL Reclaimed</h3>
+                          <p className="text-sm text-yellow-400/60">Total SOL earned back</p>
                         </div>
                       </div>
                     </div>
-                    <p className="text-lg font-bold text-yellow-400">{(currentStats.total_fees_paid / 1000000000).toFixed(6)} SOL</p>
+                    <p className="text-lg font-bold text-yellow-400">{((currentStats.total_fees_paid * 49) / 1000000000).toFixed(6)} SOL</p>
                   </CardContent>
                 </Card>
                 

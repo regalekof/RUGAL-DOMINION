@@ -278,7 +278,7 @@ export function TokenBurn() {
               symbol: tokenSymbol,
               balance: parsedInfo.tokenAmount.uiAmount,
               decimals: parsedInfo.tokenAmount.decimals,
-              tokenAccount: pubkey,
+                tokenAccount: pubkey,
               image: tokenImage,
               description: undefined,
               isFrozen: isFrozen
@@ -535,7 +535,7 @@ export function TokenBurn() {
                     {token.image ? (
                       <div className="relative">
                         <img
-                          src={token.image}
+                      src={token.image}
                           alt={token.symbol}
                           className={`w-20 h-20 rounded-full object-cover transition-all ${
                             selectedTokens.has(token.address)

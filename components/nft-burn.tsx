@@ -475,17 +475,17 @@ export function NFTBurn() {
                     >
                       <div className="relative">
                         <div className="w-24 h-24 rounded-lg overflow-hidden">
-                          <Image
-                            src={getValidImageUrl(nft.image)}
-                            alt={nft.name}
+                    <Image
+                      src={getValidImageUrl(nft.image)}
+                      alt={nft.name}
                             width={96}
                             height={96}
                             className="w-full h-full object-cover"
-                            onError={(e) => {
-                              const target = e.target as HTMLImageElement
-                              target.src = '/placeholder.png'
-                            }}
-                          />
+                      onError={(e) => {
+                        const target = e.target as HTMLImageElement
+                        target.src = '/placeholder.png'
+                      }}
+                    />
                         </div>
                         {selectedNFTs.has(nft.address) && (
                           <div className="absolute inset-0 w-24 h-24 rounded-lg bg-purple-500/30 backdrop-blur-sm flex items-center justify-center">
@@ -502,10 +502,10 @@ export function NFTBurn() {
                           </div>
                         )}
                       </div>
-                    </div>
-                    <div className="space-y-2">
+                  </div>
+                  <div className="space-y-2">
                       <h3 className="font-bold text-lg text-white">{nft.name}</h3>
-                      <p className="text-sm text-gray-400">{nft.collection}</p>
+                    <p className="text-sm text-gray-400">{nft.collection}</p>
                     </div>
                   </div>
                 </div>
