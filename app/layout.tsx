@@ -9,7 +9,12 @@ const inter = Inter({ subsets: ["latin"] })
 export const metadata: Metadata = {
   title: "RUGAL'S DOMINION | Token Burning Arena",
   description: "Burn tokens with the power of Rugal Bernstein in this King of Fighters inspired platform",
-  generator: 'mehdi'
+  generator: 'mehdi',
+  icons: {
+    icon: '/favicon.svg',
+    shortcut: '/favicon.svg',
+    apple: '/favicon.svg',
+  },
 }
 
 export default function RootLayout({
