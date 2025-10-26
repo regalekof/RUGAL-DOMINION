@@ -5,7 +5,7 @@ import { useWallet } from '@solana/wallet-adapter-react'
 import { SiteHeader } from '@/components/site-header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Trophy, Medal, Award, Crown, Flame, Zap, Eye, ArrowLeft, Target, Star, TrendingUp, Clock, Coins, Users, Gift } from 'lucide-react'
+import { Trophy, Medal, Award, Crown, Flame, Zap, Eye, ArrowLeft, Target, Star, TrendingUp, Clock, Coins, Users, Gift, Copy, Check } from 'lucide-react'
 import Link from 'next/link'
 import { POINTS } from '@/components/leaderboard'
 import { supabase } from '@/lib/supabase-client'
@@ -99,6 +99,7 @@ export default function ProfilePage() {
   const [userStats, setUserStats] = useState<UserStats | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [showUsernameSetup, setShowUsernameSetup] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     if (!publicKey) {
@@ -316,6 +317,15 @@ export default function ProfilePage() {
 
   const currentStats = userStats || defaultStats
 
+  const copyReferralLink = () => {
+    if (!currentStats.referral_code) return
+    
+    const referralLink = `${window.location.origin}?ref=${currentStats.referral_code}`
+    navigator.clipboard.writeText(referralLink)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
   return (
     <div className="relative min-h-screen bg-gradient-to-br from-gray-900 via-red-900/20 to-purple-900/20">
       <SiteHeader />
@@ -458,8 +468,26 @@ export default function ProfilePage() {
                   </div>
                   <h3 className="text-3xl font-bold text-white mb-2">{currentStats.referrals_count}</h3>
                   <p className="text-sm text-blue-400/60 font-medium">Referrals</p>
-                  <div className="mt-3 text-xs text-blue-400/60">
-                    Code: {currentStats.referral_code || 'N/A'}
+                  <div className="mt-3">
+                    <Button
+                      onClick={copyReferralLink}
+                      size="sm"
+                      variant="outline"
+                      className="text-xs px-3 py-1 border-blue-500/30 text-blue-300 hover:bg-blue-500/10 eclipse-glow"
+                      disabled={!currentStats.referral_code}
+                    >
+                      {copied ? (
+                        <>
+                          <Check className="mr-1 h-3 w-3" />
+                          Copied!
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="mr-1 h-3 w-3" />
+                          Copy Link
+                        </>
+                      )}
+                    </Button>
                   </div>
                 </CardContent>
               </Card>
