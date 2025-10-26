@@ -284,10 +284,10 @@ export default function ReferralSystem() {
           <div className="space-y-2 text-sm text-gray-300">
             <p>• <span className="text-purple-400">Create custom referral code</span> (e.g., 'rugal')</p>
             <p>• <span className="text-purple-400">Share your unique link</span> with friends</p>
-            <p>• <span className="text-purple-400">Earn points when they act:</span></p>
-            <p className="ml-4 text-xs">- Absorb: 10 points</p>
-            <p className="ml-4 text-xs">- Token Burn: 50 points</p>
-            <p className="ml-4 text-xs">- NFT Burn: 100 points</p>
+            <p>• <span className="text-purple-400">Earn 30% of their points:</span></p>
+            <p className="ml-4 text-xs">- They earn 50 points → You get 15 points</p>
+            <p className="ml-4 text-xs">- They earn 200 points → You get 60 points</p>
+            <p className="ml-4 text-xs">- They earn 10 points → You get 3 points</p>
             <p>• <span className="text-purple-400">Track referrals</span> in your profile</p>
           </div>
         </CardContent>

@@ -249,7 +249,7 @@ export default function UsernameSetup({ onComplete }: UsernameSetupProps) {
         <div className="text-xs text-gray-400 text-center">
           <p>• Username becomes your referral code</p>
           <p>• Share: rugal-dominion.xyz?ref={username || 'username'}</p>
-          <p>• Earn points when friends use your link</p>
+          <p>• Earn 30% of points when friends use your link</p>
         </div>
       </CardContent>
     </Card>

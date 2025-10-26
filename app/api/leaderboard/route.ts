@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Failed to update leaderboard' }, { status: 500 })
       }
 
-      // Give points to referrer if this user was referred
+      // Give 30% of points to referrer if this user was referred
       if (referralCode && existingEntry.referred_by) {
         const { data: referrerData } = await supabase
           .from('leaderboard_entries')
@@ -95,10 +95,11 @@ export async function POST(request: NextRequest) {
           .single()
 
         if (referrerData) {
+          const referrerPoints = Math.floor(pointsToAdd * 0.3) // 30% of points
           await supabase
             .from('leaderboard_entries')
             .update({
-              points: referrerData.points + pointsToAdd,
+              points: referrerData.points + referrerPoints,
               referrals_count: referrerData.referrals_count + 1
             })
             .eq('referral_code', existingEntry.referred_by)
@@ -129,7 +130,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Failed to create leaderboard entry' }, { status: 500 })
       }
 
-      // Give points to referrer if this is a new user with referral code
+      // Give 30% of points to referrer if this is a new user with referral code
       if (referralCode) {
         const { data: referrerData } = await supabase
           .from('leaderboard_entries')
@@ -138,10 +139,11 @@ export async function POST(request: NextRequest) {
           .single()
 
         if (referrerData) {
+          const referrerPoints = Math.floor(pointsToAdd * 0.3) // 30% of points
           await supabase
             .from('leaderboard_entries')
             .update({
-              points: referrerData.points + pointsToAdd,
+              points: referrerData.points + referrerPoints,
               referrals_count: referrerData.referrals_count + 1
             })
             .eq('referral_code', referralCode)
