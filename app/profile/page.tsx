@@ -272,27 +272,7 @@ export default function ProfilePage() {
     )
   }
 
-  // Create default stats if user has no activity
-  const defaultStats: UserStats = {
-    id: publicKey?.toString() || '',
-    wallet: publicKey?.toString() || '',
-    points: 0,
-    absorbs: 0,
-    token_burns: 0,
-    nft_burns: 0,
-    total_fees_paid: 0,
-    referral_code: publicKey ? publicKey.toString().slice(0, 8).toUpperCase() : '',
-    referred_by: '',
-    referrals_count: 0,
-    referral_rewards: 0,
-    last_activity: new Date().toISOString(),
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  }
-
-  const currentStats = userStats || defaultStats
-
-  // Show username setup if needed
+  // Show username setup if needed - this should happen BEFORE creating defaultStats
   if (showUsernameSetup) {
     return (
       <div className="relative min-h-screen bg-gradient-to-br from-gray-900 via-red-900/20 to-purple-900/20">
@@ -314,6 +294,27 @@ export default function ProfilePage() {
       </div>
     )
   }
+
+  // Create default stats if user has no activity
+  const defaultStats: UserStats = {
+    id: publicKey?.toString() || '',
+    wallet: publicKey?.toString() || '',
+    username: 'Anonymous Warrior', // This should never be used since we force username setup
+    points: 0,
+    absorbs: 0,
+    token_burns: 0,
+    nft_burns: 0,
+    total_fees_paid: 0,
+    referral_code: publicKey ? publicKey.toString().slice(0, 8).toUpperCase() : '',
+    referred_by: '',
+    referrals_count: 0,
+    referral_rewards: 0,
+    last_activity: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }
+
+  const currentStats = userStats || defaultStats
 
   return (
     <div className="relative min-h-screen bg-gradient-to-br from-gray-900 via-red-900/20 to-purple-900/20">
