@@ -206,14 +206,14 @@ export default function ReferralSystem() {
           {/* Custom Referral Code Input */}
           <div className="space-y-3">
             <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="Enter custom referral code (e.g., 'rugal')"
-                value={customCode}
-                onChange={(e) => setCustomCode(e.target.value)}
-                className="flex-1 px-3 py-2 bg-gray-800/50 border border-gray-700 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-red-500"
-                maxLength={20}
-              />
+                 <input
+                   type="text"
+                   placeholder="Enter custom referral word (e.g., 'rugal', 'warrior', 'king')"
+                   value={customCode}
+                   onChange={(e) => setCustomCode(e.target.value)}
+                   className="flex-1 px-3 py-2 bg-gray-800/50 border border-gray-700 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-red-500"
+                   maxLength={20}
+                 />
               <Button
                 onClick={generateCustomReferralCode}
                 disabled={isGenerating || !customCode.trim()}
@@ -222,9 +222,9 @@ export default function ReferralSystem() {
                 {isGenerating ? 'Creating...' : 'Create'}
               </Button>
             </div>
-            <p className="text-xs text-gray-400">
-              Choose a unique name for your referral link (e.g., 'rugal' → rugal-dominion.xyz?ref=rugal)
-            </p>
+                 <p className="text-xs text-gray-400">
+                   Choose a unique word for your referral link (e.g., 'rugal' → rugal-dominion.xyz?ref=rugal)
+                 </p>
           </div>
 
           <div className="bg-gray-800/50 rounded-lg p-3 border border-gray-700">
@@ -281,15 +281,15 @@ export default function ReferralSystem() {
       <Card className="card-gothic pixel-border eclipse-bg border-purple-500/30">
         <CardContent className="p-6">
           <h3 className="text-lg font-bold text-white mb-3">How Referrals Work</h3>
-          <div className="space-y-2 text-sm text-gray-300">
-            <p>• <span className="text-purple-400">Create custom referral code</span> (e.g., 'rugal')</p>
-            <p>• <span className="text-purple-400">Share your unique link</span> with friends</p>
-            <p>• <span className="text-purple-400">Earn 30% of their points:</span></p>
-            <p className="ml-4 text-xs">- They earn 50 points → You get 15 points</p>
-            <p className="ml-4 text-xs">- They earn 200 points → You get 60 points</p>
-            <p className="ml-4 text-xs">- They earn 10 points → You get 3 points</p>
-            <p>• <span className="text-purple-400">Track referrals</span> in your profile</p>
-          </div>
+               <div className="space-y-2 text-sm text-gray-300">
+                 <p>• <span className="text-purple-400">Choose your unique word</span> (e.g., 'rugal', 'warrior', 'king')</p>
+                 <p>• <span className="text-purple-400">Share your unique link</span> with friends</p>
+                 <p>• <span className="text-purple-400">Earn 30% of their points:</span></p>
+                 <p className="ml-4 text-xs">- They earn 50 points → You get 15 points</p>
+                 <p className="ml-4 text-xs">- They earn 200 points → You get 60 points</p>
+                 <p className="ml-4 text-xs">- They earn 10 points → You get 3 points</p>
+                 <p>• <span className="text-purple-400">Track referrals</span> in your profile</p>
+               </div>
         </CardContent>
       </Card>
     </div>

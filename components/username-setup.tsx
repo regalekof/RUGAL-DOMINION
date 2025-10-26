@@ -171,8 +171,9 @@ export default function UsernameSetup({ onComplete }: UsernameSetupProps) {
       <CardContent className="space-y-6">
         <div className="text-sm text-gray-400 mb-4">
           <p>• Username is <span className="text-red-400 font-semibold">required</span> to access your profile</p>
+          <p>• Username becomes your <span className="text-purple-400 font-semibold">referral code</span></p>
           <p>• Profile picture is <span className="text-gray-500">optional</span></p>
-          <p>• Username becomes your referral code</p>
+          <p>• Choose a unique word (e.g., 'rugal', 'warrior', 'king')</p>
         </div>
         
         {/* Username Input */}
@@ -183,7 +184,7 @@ export default function UsernameSetup({ onComplete }: UsernameSetupProps) {
               type="text"
               value={username}
               onChange={handleUsernameChange}
-              placeholder="Choose your username (default: 'Warrior')"
+              placeholder="Choose your unique word (e.g., 'rugal', 'warrior', 'king')"
               className="w-full px-3 py-2 bg-gray-800/50 border border-gray-700 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-red-500"
               maxLength={20}
             />
@@ -263,9 +264,8 @@ export default function UsernameSetup({ onComplete }: UsernameSetupProps) {
         </Button>
 
         <div className="text-xs text-gray-400 text-center">
-          <p>• Username becomes your referral code</p>
-          <p>• Share: rugal-dominion.xyz?ref={username || 'username'}</p>
-          <p>• Earn 30% of points when friends use your link</p>
+          <p>• Your referral link: <span className="font-mono text-red-300">rugal-dominion.xyz?ref={username || 'yourword'}</span></p>
+          <p>• Share this link to earn 30% of referral points</p>
         </div>
       </CardContent>
     </Card>
