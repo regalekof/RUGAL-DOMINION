@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { ArrowLeft, Zap, Shield, Coins } from "lucide-react"
+import { ArrowLeft, Zap, Shield, Coins, ExternalLink, CheckCircle } from "lucide-react"
 import { SiteHeader } from "@/components/site-header"
 import { useWallet } from "@solana/wallet-adapter-react"
 import { useConnection } from "@solana/wallet-adapter-react"
@@ -27,6 +27,7 @@ function AbsorbContent() {
   const [emptyAccounts, setEmptyAccounts] = useState<{ address: string; balance: number }[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [successTx, setSuccessTx] = useState<string | null>(null)
 
   const findEmptyAccounts = async () => {
     if (!publicKey) return
@@ -164,10 +165,13 @@ function AbsorbContent() {
 
         if (confirmation.value.err) {
           console.error('❌ Transaction failed:', confirmation.value.err)
-          throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`)
+          setError('Transaction failed. Please try again.')
+          return
         }
 
-        console.log('✅ Transaction successful!')
+        console.log('🎉 Transaction successful!')
+        setSuccessTx(signature)
+        setError(null)
 
         // Add points to leaderboard
         const referralCode = localStorage.getItem('referral_code')
@@ -175,8 +179,8 @@ function AbsorbContent() {
           addLeaderboardPoints(publicKey.toString(), 'absorb', 0, referralCode || undefined)
         }
 
-      // Refresh the list
-      await findEmptyAccounts()
+        // Refresh the list
+        await findEmptyAccounts()
     } catch (err) {
       setError("Failed to close accounts")
       console.error(err)
@@ -202,6 +206,46 @@ function AbsorbContent() {
             Back to Arena
           </Link>
         </div>
+
+        {/* Success Box */}
+        {successTx && (
+          <div className="mx-auto max-w-[900px] mb-8">
+            <Card className="card-gothic pixel-border eclipse-bg border-green-500/30">
+              <CardContent className="p-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <CheckCircle className="h-6 w-6 text-green-400" />
+                  <h3 className="text-xl font-bold text-green-400">Transaction Successful!</h3>
+                </div>
+                <p className="text-gray-300 mb-4">
+                  Your rent absorption transaction has been completed successfully.
+                </p>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-400">Transaction ID:</span>
+                  <code className="text-sm bg-gray-800 px-2 py-1 rounded text-green-300 font-mono">
+                    {successTx.slice(0, 8)}...{successTx.slice(-8)}
+                  </code>
+                  <a
+                    href={`https://solscan.io/tx/${successTx}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 text-blue-400 hover:text-blue-300 transition-colors"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                    View on Solscan
+                  </a>
+                </div>
+                <Button
+                  onClick={() => setSuccessTx(null)}
+                  variant="outline"
+                  size="sm"
+                  className="mt-4 border-gray-600 text-gray-300 hover:bg-gray-800"
+                >
+                  Close
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        )}
 
         <div className="mx-auto max-w-[900px]">
           <div className="text-center mb-12">

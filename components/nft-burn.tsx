@@ -7,7 +7,7 @@ import { TOKEN_PROGRAM_ID, createBurnCheckedInstruction, getAccount, createClose
 import { Metaplex } from '@metaplex-foundation/js'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
-import { Flame, Zap } from 'lucide-react'
+import { Flame, Zap, ExternalLink, CheckCircle } from 'lucide-react'
 import Image from 'next/image'
 import { RPC_CONFIG } from '@/app/config'
 import { addLeaderboardPoints } from '@/components/leaderboard'
@@ -122,6 +122,7 @@ export function NFTBurn() {
   const [isFetching, setIsFetching] = useState(false)
   const [selectedNFTs, setSelectedNFTs] = useState<Set<string>>(new Set())
   const [hasInitialFetch, setHasInitialFetch] = useState(false)
+  const [successTx, setSuccessTx] = useState<string | null>(null)
 
   // Use QuickNode endpoint with proper configuration
   const rpcConnection = new Connection(RPC_CONFIG.QUICKNODE_HTTP, {
@@ -399,6 +400,7 @@ export function NFTBurn() {
       await rpcConnection.confirmTransaction(signature)
 
       console.log('✅ Transaction successful!')
+      setSuccessTx(signature)
 
       setNfts(prev => prev.filter(nft => !selectedNFTs.has(nft.address)))
       setSelectedNFTs(new Set())
@@ -435,6 +437,44 @@ export function NFTBurn() {
           Select NFTs to burn
         </p>
       </div>
+
+      {/* Success Box */}
+      {successTx && (
+        <div className="mb-6">
+          <div className="bg-gray-900 border border-green-500/30 rounded-lg p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <CheckCircle className="h-6 w-6 text-green-400" />
+              <h3 className="text-xl font-bold text-green-400">Transaction Successful!</h3>
+            </div>
+            <p className="text-gray-300 mb-4">
+              Your NFT burning transaction has been completed successfully.
+            </p>
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-gray-400">Transaction ID:</span>
+              <code className="text-sm bg-gray-800 px-2 py-1 rounded text-green-300 font-mono">
+                {successTx.slice(0, 8)}...{successTx.slice(-8)}
+              </code>
+              <a
+                href={`https://solscan.io/tx/${successTx}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 text-blue-400 hover:text-blue-300 transition-colors"
+              >
+                <ExternalLink className="h-4 w-4" />
+                View on Solscan
+              </a>
+            </div>
+            <Button
+              onClick={() => setSuccessTx(null)}
+              variant="outline"
+              size="sm"
+              className="mt-4 border-gray-600 text-gray-300 hover:bg-gray-800"
+            >
+              Close
+            </Button>
+          </div>
+        </div>
+      )}
 
       {publicKey ? (
         isFetching && !hasInitialFetch ? (
