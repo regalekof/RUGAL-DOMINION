@@ -5,7 +5,7 @@ import { useWallet } from '@solana/wallet-adapter-react'
 import { SiteHeader } from '@/components/site-header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Trophy, Medal, Award, Crown, Flame, Zap, Eye, ArrowLeft, Target, Star, TrendingUp, Clock, Coins } from 'lucide-react'
+import { Trophy, Medal, Award, Crown, Flame, Zap, Eye, ArrowLeft, Target, Star, TrendingUp, Clock, Coins, Users, Gift } from 'lucide-react'
 import Link from 'next/link'
 import { POINTS } from '@/components/leaderboard'
 import { supabase } from '@/lib/supabase-client'
@@ -18,6 +18,10 @@ interface UserStats {
   token_burns: number
   nft_burns: number
   total_fees_paid: number
+  referral_code?: string
+  referred_by?: string
+  referrals_count: number
+  referral_rewards: number
   last_activity: string
   created_at: string
   updated_at: string
@@ -266,6 +270,10 @@ export default function ProfilePage() {
     token_burns: 0,
     nft_burns: 0,
     total_fees_paid: 0,
+    referral_code: publicKey ? publicKey.toString().slice(0, 8).toUpperCase() : '',
+    referred_by: '',
+    referrals_count: 0,
+    referral_rewards: 0,
     last_activity: new Date().toISOString(),
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -388,6 +396,41 @@ export default function ProfilePage() {
                   <p className="text-sm text-purple-400/60 font-medium">SOL Reclaimed</p>
                   <div className="mt-3 text-xs text-purple-400/60">
                     Last: {formatDate(currentStats.last_activity)}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+
+          {/* Referral Stats */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="relative group">
+              <div className="absolute inset-0 bg-gradient-to-r from-blue-500/20 to-cyan-500/20 rounded-xl blur-sm group-hover:blur-md transition-all duration-300"></div>
+              <Card className="relative card-gothic pixel-border eclipse-bg border-blue-500/30">
+                <CardContent className="p-6 text-center">
+                  <div className="flex items-center justify-center w-16 h-16 bg-gradient-to-r from-blue-500/20 to-cyan-500/20 rounded-full mx-auto mb-4">
+                    <Users className="h-8 w-8 text-blue-400" />
+                  </div>
+                  <h3 className="text-3xl font-bold text-white mb-2">{currentStats.referrals_count}</h3>
+                  <p className="text-sm text-blue-400/60 font-medium">Referrals</p>
+                  <div className="mt-3 text-xs text-blue-400/60">
+                    Code: {currentStats.referral_code || 'N/A'}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="relative group">
+              <div className="absolute inset-0 bg-gradient-to-r from-yellow-500/20 to-orange-500/20 rounded-xl blur-sm group-hover:blur-md transition-all duration-300"></div>
+              <Card className="relative card-gothic pixel-border eclipse-bg border-yellow-500/30">
+                <CardContent className="p-6 text-center">
+                  <div className="flex items-center justify-center w-16 h-16 bg-gradient-to-r from-yellow-500/20 to-orange-500/20 rounded-full mx-auto mb-4">
+                    <Gift className="h-8 w-8 text-yellow-400" />
+                  </div>
+                  <h3 className="text-3xl font-bold text-white mb-2">{(currentStats.referral_rewards / 1000000000).toFixed(3)}</h3>
+                  <p className="text-sm text-yellow-400/60 font-medium">Referral Rewards</p>
+                  <div className="mt-3 text-xs text-yellow-400/60">
+                    SOL earned from referrals
                   </div>
                 </CardContent>
               </Card>

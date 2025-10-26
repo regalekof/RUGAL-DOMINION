@@ -7,6 +7,10 @@ CREATE TABLE IF NOT EXISTS leaderboard_entries (
   token_burns INTEGER DEFAULT 0,
   nft_burns INTEGER DEFAULT 0,
   total_fees_paid BIGINT DEFAULT 0,
+  referral_code TEXT UNIQUE,
+  referred_by TEXT,
+  referrals_count INTEGER DEFAULT 0,
+  referral_rewards BIGINT DEFAULT 0,
   last_activity TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -15,6 +19,8 @@ CREATE TABLE IF NOT EXISTS leaderboard_entries (
 -- Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_leaderboard_points ON leaderboard_entries(points DESC);
 CREATE INDEX IF NOT EXISTS idx_leaderboard_wallet ON leaderboard_entries(wallet);
+CREATE INDEX IF NOT EXISTS idx_referral_code ON leaderboard_entries(referral_code);
+CREATE INDEX IF NOT EXISTS idx_referred_by ON leaderboard_entries(referred_by);
 
 -- Enable Row Level Security (RLS)
 ALTER TABLE leaderboard_entries ENABLE ROW LEVEL SECURITY;

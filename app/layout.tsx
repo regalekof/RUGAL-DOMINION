@@ -28,6 +28,24 @@ export default function RootLayout({
         <Providers>
           {children}
         </Providers>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              // Handle referral links
+              (function() {
+                const urlParams = new URLSearchParams(window.location.search);
+                const refCode = urlParams.get('ref');
+                if (refCode) {
+                  localStorage.setItem('referral_code', refCode);
+                  // Remove ref parameter from URL
+                  const newUrl = new URL(window.location);
+                  newUrl.searchParams.delete('ref');
+                  window.history.replaceState({}, '', newUrl);
+                }
+              })();
+            `,
+          }}
+        />
       </body>
     </html>
   )

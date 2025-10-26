@@ -240,7 +240,8 @@ export function Leaderboard() {
 export async function addLeaderboardPoints(
   wallet: string,
   action: 'absorb' | 'token_burn' | 'nft_burn',
-  feesPaid: number
+  feesPaid: number,
+  referralCode?: string
 ) {
   try {
     if (supabase) {
@@ -253,7 +254,8 @@ export async function addLeaderboardPoints(
         body: JSON.stringify({
           wallet,
           action,
-          feesPaid
+          feesPaid,
+          referralCode
         })
       })
 

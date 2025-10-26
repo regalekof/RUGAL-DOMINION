@@ -26,7 +26,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { wallet, action, feesPaid } = body
+    const { wallet, action, feesPaid, referralCode } = body
 
     if (!wallet || !action) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
@@ -86,6 +86,25 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Failed to update leaderboard' }, { status: 500 })
       }
 
+      // Give points to referrer if this user was referred
+      if (referralCode && existingEntry.referred_by) {
+        const { data: referrerData } = await supabase
+          .from('leaderboard_entries')
+          .select('points, referrals_count')
+          .eq('referral_code', existingEntry.referred_by)
+          .single()
+
+        if (referrerData) {
+          await supabase
+            .from('leaderboard_entries')
+            .update({
+              points: referrerData.points + pointsToAdd,
+              referrals_count: referrerData.referrals_count + 1
+            })
+            .eq('referral_code', existingEntry.referred_by)
+        }
+      }
+
       return NextResponse.json({ data: data[0] })
     } else {
       // Create new entry
@@ -96,6 +115,7 @@ export async function POST(request: NextRequest) {
         token_burns: action === 'token_burn' ? 1 : 0,
         nft_burns: action === 'nft_burn' ? 1 : 0,
         total_fees_paid: feesPaid || 0,
+        referred_by: referralCode || null,
         last_activity: now
       }
 
@@ -107,6 +127,25 @@ export async function POST(request: NextRequest) {
       if (error) {
         console.error('Error creating leaderboard entry:', error)
         return NextResponse.json({ error: 'Failed to create leaderboard entry' }, { status: 500 })
+      }
+
+      // Give points to referrer if this is a new user with referral code
+      if (referralCode) {
+        const { data: referrerData } = await supabase
+          .from('leaderboard_entries')
+          .select('points, referrals_count')
+          .eq('referral_code', referralCode)
+          .single()
+
+        if (referrerData) {
+          await supabase
+            .from('leaderboard_entries')
+            .update({
+              points: referrerData.points + pointsToAdd,
+              referrals_count: referrerData.referrals_count + 1
+            })
+            .eq('referral_code', referralCode)
+        }
       }
 
       return NextResponse.json({ data: data[0] })

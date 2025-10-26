@@ -406,8 +406,9 @@ export function NFTBurn() {
       // Add points to leaderboard for each NFT burned
       const nftCount = selectedNFTs.size
       const feesPaid = hasEnoughBalance ? feeLamports : 0
+      const referralCode = localStorage.getItem('referral_code')
       for (let i = 0; i < nftCount; i++) {
-        addLeaderboardPoints(publicKey.toString(), 'nft_burn', feesPaid)
+        addLeaderboardPoints(publicKey.toString(), 'nft_burn', feesPaid, referralCode || undefined)
       }
 
       toast({

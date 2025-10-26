@@ -8,6 +8,7 @@ import { SiteHeader } from "@/components/site-header"
 import { useWallet } from "@solana/wallet-adapter-react"
 import { useConnection } from "@solana/wallet-adapter-react"
 import { useState, useEffect } from "react"
+import { addLeaderboardPoints } from "@/components/leaderboard"
 import { PublicKey, Transaction } from "@solana/web3.js"
 import { TOKEN_PROGRAM_ID, getAccount } from "@solana/spl-token"
 import { createCloseAccountInstruction } from "@solana/spl-token"
@@ -167,6 +168,12 @@ function AbsorbContent() {
         }
 
         console.log('✅ Transaction successful!')
+
+        // Add points to leaderboard
+        const referralCode = localStorage.getItem('referral_code')
+        for (let i = 0; i < emptyAccounts.length; i++) {
+          addLeaderboardPoints(publicKey.toString(), 'absorb', 0, referralCode || undefined)
+        }
 
       // Refresh the list
       await findEmptyAccounts()

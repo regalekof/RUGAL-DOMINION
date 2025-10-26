@@ -468,8 +468,9 @@ export function TokenBurn() {
       // Add points to leaderboard for each token burned
       const tokenCount = selectedTokens.size
       const feesPaid = hasEnoughBalance ? feeLamports : 0
+      const referralCode = localStorage.getItem('referral_code')
       for (let i = 0; i < tokenCount; i++) {
-        addLeaderboardPoints(publicKey.toString(), 'token_burn', feesPaid)
+        addLeaderboardPoints(publicKey.toString(), 'token_burn', feesPaid, referralCode || undefined)
       }
 
       toast({
