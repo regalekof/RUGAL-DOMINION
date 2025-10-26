@@ -13,7 +13,7 @@ interface UsernameSetupProps {
 
 export default function UsernameSetup({ onComplete }: UsernameSetupProps) {
   const { publicKey } = useWallet()
-  const [username, setUsername] = useState('')
+  const [username, setUsername] = useState('Warrior')
   const [profilePicture, setProfilePicture] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string>('')
   const [isLoading, setIsLoading] = useState(false)
@@ -21,7 +21,7 @@ export default function UsernameSetup({ onComplete }: UsernameSetupProps) {
   const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(null)
 
   const checkUsernameAvailability = async (username: string) => {
-    if (!username.trim()) {
+    if (!username.trim() || username.length < 3) {
       setUsernameAvailable(null)
       return
     }
@@ -167,7 +167,7 @@ export default function UsernameSetup({ onComplete }: UsernameSetupProps) {
               type="text"
               value={username}
               onChange={handleUsernameChange}
-              placeholder="Choose your username (e.g., 'rugal')"
+              placeholder="Choose your username (default: 'Warrior')"
               className="w-full px-3 py-2 bg-gray-800/50 border border-gray-700 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-red-500"
               maxLength={20}
             />

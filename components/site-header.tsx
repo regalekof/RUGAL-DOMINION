@@ -12,7 +12,6 @@ import { supabase } from '@/lib/supabase-client'
 export const SiteHeader: FC = () => {
   const { publicKey, connected } = useWallet()
   const [userProfile, setUserProfile] = useState<{username?: string, profile_picture?: string} | null>(null)
-  const [showUsernameSetup, setShowUsernameSetup] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
 
   useEffect(() => {
@@ -20,7 +19,6 @@ export const SiteHeader: FC = () => {
       loadUserProfile()
     } else {
       setUserProfile(null)
-      setShowUsernameSetup(false)
     }
   }, [connected, publicKey])
 
@@ -36,7 +34,7 @@ export const SiteHeader: FC = () => {
         if (username) {
           setUserProfile({ username, profile_picture: profilePicture || undefined })
         } else {
-          setShowUsernameSetup(true)
+          setUserProfile(null)
         }
         setIsLoading(false)
         return
@@ -52,9 +50,8 @@ export const SiteHeader: FC = () => {
         console.error('Error loading user profile:', error)
       } else if (data && data.username) {
         setUserProfile(data)
-        setShowUsernameSetup(false)
       } else {
-        setShowUsernameSetup(true)
+        setUserProfile(null)
       }
     } catch (error) {
       console.error('Error loading user profile:', error)
@@ -64,71 +61,8 @@ export const SiteHeader: FC = () => {
   }
 
   const handleProfilePictureClick = () => {
-    if (!userProfile?.username) {
-      setShowUsernameSetup(true)
-      return
-    }
-    
-    // Create file input for profile picture change
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = 'image/*'
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0]
-      if (!file || !publicKey) return
-
-      if (file.size > 2 * 1024 * 1024) {
-        alert('File size exceeds 2MB limit.')
-        return
-      }
-
-      try {
-        if (supabase) {
-          const fileExt = file.name.split('.').pop()
-          const filePath = `${publicKey.toString()}/profile_pictures/${Date.now()}.${fileExt}`
-          const { data, error: uploadError } = await supabase.storage
-            .from('profile_pictures')
-            .upload(filePath, file, {
-              cacheControl: '3600',
-              upsert: false,
-            })
-
-          if (uploadError) {
-            console.error('Error uploading profile picture:', uploadError)
-            alert('Failed to upload profile picture.')
-            return
-          }
-
-          const profilePictureUrl = supabase.storage.from('profile_pictures').getPublicUrl(filePath).data.publicUrl
-          
-          const { error: updateError } = await supabase
-            .from('leaderboard_entries')
-            .update({ profile_picture: profilePictureUrl })
-            .eq('wallet', publicKey.toString())
-
-          if (updateError) {
-            console.error('Error updating profile picture:', updateError)
-            alert('Failed to update profile picture.')
-            return
-          }
-
-          setUserProfile(prev => prev ? { ...prev, profile_picture: profilePictureUrl } : null)
-        } else {
-          // Fallback to localStorage
-          const reader = new FileReader()
-          reader.onload = (e) => {
-            const dataUrl = e.target?.result as string
-            localStorage.setItem(`profile_picture_${publicKey.toString()}`, dataUrl)
-            setUserProfile(prev => prev ? { ...prev, profile_picture: dataUrl } : null)
-          }
-          reader.readAsDataURL(file)
-        }
-      } catch (error) {
-        console.error('Error updating profile picture:', error)
-        alert('Failed to update profile picture.')
-      }
-    }
-    input.click()
+    // Always go to profile page
+    window.location.href = '/profile'
   }
 
   return (
@@ -189,16 +123,6 @@ export const SiteHeader: FC = () => {
                   </div>
                 </div>
 
-                {/* Username Setup Button */}
-                {showUsernameSetup && (
-                  <Button
-                    onClick={() => setShowUsernameSetup(true)}
-                    size="sm"
-                    className="bg-red-600 hover:bg-red-700 text-white text-xs px-3 py-1"
-                  >
-                    Setup Username
-                  </Button>
-                )}
 
                 {/* Profile Link */}
                 {userProfile?.username && (
@@ -255,33 +179,6 @@ export const SiteHeader: FC = () => {
           </div>
         </div>
       </header>
-
-      {/* Username Setup Modal */}
-      {showUsernameSetup && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-gray-900 border border-red-500/30 rounded-lg p-6 max-w-md w-full">
-            <h3 className="text-xl font-bold text-white mb-4">Setup Your Profile</h3>
-            <p className="text-gray-400 mb-4">
-              Create your username and upload a profile picture to get started!
-            </p>
-            <div className="flex gap-3">
-              <Button
-                onClick={() => window.location.href = '/profile'}
-                className="flex-1 bg-red-600 hover:bg-red-700 text-white"
-              >
-                Go to Profile Setup
-              </Button>
-              <Button
-                onClick={() => setShowUsernameSetup(false)}
-                variant="outline"
-                className="border-gray-600 text-gray-300 hover:bg-gray-800"
-              >
-                Later
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   )
 }

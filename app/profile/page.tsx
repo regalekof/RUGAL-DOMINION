@@ -350,9 +350,20 @@ export default function ProfilePage() {
                     </div>
                   </div>
                   <div>
-                    <h1 className="text-4xl font-bold power-text mb-2">
-                      {currentStats.username || 'Anonymous Warrior'}
-                    </h1>
+                    <div className="flex items-center gap-3 mb-2">
+                      <h1 className="text-4xl font-bold power-text">
+                        {currentStats.username || 'Anonymous Warrior'}
+                      </h1>
+                      {!currentStats.username && (
+                        <Button
+                          onClick={() => setShowUsernameSetup(true)}
+                          size="sm"
+                          className="bg-red-600 hover:bg-red-700 text-white text-sm px-4 py-2"
+                        >
+                          Setup Username
+                        </Button>
+                      )}
+                    </div>
                     {currentStats.points === 0 ? (
                       <div>
                         <p className="text-red-400/80 text-lg mb-2">
