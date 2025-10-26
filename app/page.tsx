@@ -10,31 +10,31 @@ export default function Home() {
       <SiteHeader />
 
       {/* Hero Section */}
-      <div className="relative w-full py-12 overflow-hidden">
-        <div className="container mx-auto text-center">
-          <h1 className="text-5xl md:text-7xl font-bold power-text mb-4">RUGAL'S DOMINION</h1>
-          <p className="text-xl md:text-2xl text-red-400/80 max-w-2xl mx-auto">
+      <div className="relative w-full py-8 sm:py-12 overflow-hidden">
+        <div className="container mx-auto text-center px-4">
+          <h1 className="text-3xl sm:text-5xl md:text-7xl font-bold power-text mb-4">RUGAL'S DOMINION</h1>
+          <p className="text-lg sm:text-xl md:text-2xl text-red-400/80 max-w-2xl mx-auto mb-6 sm:mb-8">
             Absorb the essence of destruction in the dark arena
           </p>
-          <div className="mt-8 flex justify-center">
+          <div className="flex justify-center">
             <Link href="/absorb">
-              <Button className="eclipse-glow rugal-gradient text-lg px-8 py-6">Enter Absorb Arena</Button>
+              <Button className="eclipse-glow rugal-gradient text-base sm:text-lg px-6 py-4 sm:px-8 sm:py-6">Enter Absorb Arena</Button>
             </Link>
           </div>
         </div>
       </div>
 
-      <main className="container relative">
-        <section id="burn" className="py-16 md:py-24">
+      <main className="container relative px-4">
+        <section id="burn" className="py-12 sm:py-16 md:py-24">
           <div className="mx-auto max-w-[800px]">
-            <div className="flex flex-col md:flex-row items-center gap-8 mb-8">
+            <div className="flex flex-col md:flex-row items-center gap-6 sm:gap-8 mb-6 sm:mb-8">
               <div className="md:w-1/3">
-                <div className="rounded-full w-24 h-24 flex items-center justify-center bg-primary/20 eclipse-glow mx-auto">
-                  <Flame className="h-12 w-12 text-primary" />
+                <div className="rounded-full w-20 h-20 sm:w-24 sm:h-24 flex items-center justify-center bg-primary/20 eclipse-glow mx-auto">
+                  <Flame className="h-10 w-10 sm:h-12 sm:w-12 text-primary" />
                 </div>
               </div>
               <div className="md:w-2/3 text-center md:text-left">
-                <h2 className="text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl power-text">
+                <h2 className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-bold tracking-tighter power-text">
                   Genocide Cutter
                 </h2>
               </div>

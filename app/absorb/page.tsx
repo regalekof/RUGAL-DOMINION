@@ -199,7 +199,7 @@ function AbsorbContent() {
     <div className="relative min-h-screen">
       <SiteHeader />
 
-      <main className="container relative py-12">
+      <main className="container relative py-8 sm:py-12 px-4">
         <div className="flex items-center mb-8">
           <Link href="/" className="flex items-center text-red-400/80 hover:text-primary transition-colors">
             <ArrowLeft className="mr-2 h-4 w-4" />
@@ -283,7 +283,7 @@ function AbsorbContent() {
                 )}
 
                 <Button 
-                  className="eclipse-glow rugal-gradient w-full py-6"
+                  className="eclipse-glow rugal-gradient w-full py-4 sm:py-6 text-sm sm:text-base"
                   onClick={closeAccounts}
                   disabled={!publicKey || emptyAccounts.length === 0 || isLoading}
                 >

@@ -558,11 +558,11 @@ export function TokenBurn() {
                 Deselect All
               </Button>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
               {memoizedTokens.map((token) => (
               <div
                 key={token.address}
-                className="p-4"
+                className="p-3 sm:p-4"
               >
                 <div className="flex flex-col items-center text-center space-y-3">
                   <div 
@@ -578,7 +578,7 @@ export function TokenBurn() {
                         <img
                       src={token.image}
                           alt={token.symbol}
-                          className={`w-20 h-20 rounded-full object-cover transition-all ${
+                          className={`w-16 h-16 sm:w-20 sm:h-20 rounded-full object-cover transition-all ${
                             selectedTokens.has(token.address)
                               ? 'ring-4 ring-primary ring-opacity-50'
                               : ''
@@ -593,14 +593,14 @@ export function TokenBurn() {
                           }}
                         />
                         {selectedTokens.has(token.address) && (
-                          <div className="absolute inset-0 w-20 h-20 rounded-full bg-purple-500/30 backdrop-blur-sm flex items-center justify-center">
+                          <div className="absolute inset-0 w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-purple-500/30 backdrop-blur-sm flex items-center justify-center">
                             <div className="w-6 h-6 bg-purple-600 rounded-full flex items-center justify-center">
                               <span className="text-white text-xs font-bold">✓</span>
                             </div>
                           </div>
                         )}
                         {token.isFrozen && (
-                          <div className="absolute inset-0 w-20 h-20 rounded-full bg-red-500/40 backdrop-blur-sm flex items-center justify-center">
+                          <div className="absolute inset-0 w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-red-500/40 backdrop-blur-sm flex items-center justify-center">
                             <div className="bg-red-600 px-2 py-1 rounded text-center">
                               <span className="text-white text-xs font-bold">FROZEN</span>
                             </div>
@@ -609,22 +609,22 @@ export function TokenBurn() {
                       </div>
                     ) : (
                       <div className="relative">
-                        <div className={`w-20 h-20 rounded-full bg-gradient-to-br from-red-500/30 to-purple-500/30 flex items-center justify-center transition-all ${
+                        <div className={`w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-gradient-to-br from-red-500/30 to-purple-500/30 flex items-center justify-center transition-all ${
                           selectedTokens.has(token.address)
                             ? 'ring-4 ring-primary ring-opacity-50'
                             : ''
                         }`}>
-                          <span className="text-red-300 font-bold text-2xl">{token.symbol.slice(0, 2).toUpperCase()}</span>
+                          <span className="text-red-300 font-bold text-lg sm:text-2xl">{token.symbol.slice(0, 2).toUpperCase()}</span>
                         </div>
                         {selectedTokens.has(token.address) && (
-                          <div className="absolute inset-0 w-20 h-20 rounded-full bg-purple-500/30 backdrop-blur-sm flex items-center justify-center">
+                          <div className="absolute inset-0 w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-purple-500/30 backdrop-blur-sm flex items-center justify-center">
                             <div className="w-6 h-6 bg-purple-600 rounded-full flex items-center justify-center">
                               <span className="text-white text-xs font-bold">✓</span>
                             </div>
                           </div>
                         )}
                         {token.isFrozen && (
-                          <div className="absolute inset-0 w-20 h-20 rounded-full bg-red-500/40 backdrop-blur-sm flex items-center justify-center">
+                          <div className="absolute inset-0 w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-red-500/40 backdrop-blur-sm flex items-center justify-center">
                             <div className="bg-red-600 px-2 py-1 rounded text-center">
                               <span className="text-white text-xs font-bold">FROZEN</span>
                             </div>

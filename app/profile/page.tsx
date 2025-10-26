@@ -279,7 +279,7 @@ export default function ProfilePage() {
     return (
       <div className="relative min-h-screen">
         <SiteHeader />
-        <main className="container relative py-12">
+        <main className="container relative py-8 sm:py-12 px-4">
           <div className="text-center py-8">
             <p className="text-red-400/60">Please connect your wallet to view your profile</p>
           </div>
@@ -292,7 +292,7 @@ export default function ProfilePage() {
     return (
       <div className="relative min-h-screen">
         <SiteHeader />
-        <main className="container relative py-12">
+        <main className="container relative py-8 sm:py-12 px-4">
           <div className="text-center py-8">
             <p className="text-red-400/60">Loading profile...</p>
           </div>
@@ -306,7 +306,7 @@ export default function ProfilePage() {
     return (
       <div className="relative min-h-screen bg-gradient-to-br from-gray-900 via-red-900/20 to-purple-900/20">
         <SiteHeader />
-        <main className="container relative py-12">
+        <main className="container relative py-8 sm:py-12 px-4">
           <div className="flex items-center mb-8">
             <Link href="/" className="flex items-center text-red-400/80 hover:text-primary transition-colors">
               <ArrowLeft className="mr-2 h-4 w-4" />

@@ -499,11 +499,11 @@ export function NFTBurn() {
                 Deselect All
               </Button>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
               {memoizedNFTs.map((nft) => (
                 <div
                   key={nft.address}
-                  className="p-4"
+                  className="p-3 sm:p-4"
                 >
                   <div className="flex flex-col items-center text-center space-y-3">
                     <div 
@@ -515,7 +515,7 @@ export function NFTBurn() {
                       onClick={() => !nft.isFrozen && toggleNFTSelection(nft.address)}
                     >
                       <div className="relative">
-                        <div className="w-24 h-24 rounded-lg overflow-hidden">
+                        <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-lg overflow-hidden">
                     <Image
                       src={getValidImageUrl(nft.image)}
                       alt={nft.name}
@@ -529,14 +529,14 @@ export function NFTBurn() {
                     />
                         </div>
                         {selectedNFTs.has(nft.address) && (
-                          <div className="absolute inset-0 w-24 h-24 rounded-lg bg-purple-500/30 backdrop-blur-sm flex items-center justify-center">
+                          <div className="absolute inset-0 w-20 h-20 sm:w-24 sm:h-24 rounded-lg bg-purple-500/30 backdrop-blur-sm flex items-center justify-center">
                             <div className="w-6 h-6 bg-purple-600 rounded-full flex items-center justify-center">
                               <span className="text-white text-xs font-bold">✓</span>
                             </div>
                           </div>
                         )}
                         {nft.isFrozen && (
-                          <div className="absolute inset-0 w-24 h-24 rounded-lg bg-red-500/40 backdrop-blur-sm flex items-center justify-center">
+                          <div className="absolute inset-0 w-20 h-20 sm:w-24 sm:h-24 rounded-lg bg-red-500/40 backdrop-blur-sm flex items-center justify-center">
                             <div className="bg-red-600 px-2 py-1 rounded text-center">
                               <span className="text-white text-xs font-bold">FROZEN</span>
                             </div>
