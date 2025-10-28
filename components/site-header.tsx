@@ -67,18 +67,18 @@ export const SiteHeader: FC = () => {
 
   return (
     <>
-      <header className="sticky top-0 z-50 w-full border-b border-red-900/30 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+    <header className="sticky top-0 z-50 w-full border-b border-red-900/30 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container flex h-16 items-center justify-between px-4">
           <div className="flex items-center">
             <Link href="/" className="flex items-center space-x-2">
-              <div className="relative">
+            <div className="relative">
                 <Eye className="h-6 w-6 sm:h-8 sm:w-8 text-primary eclipse-glow" />
-              </div>
-              <div className="hidden sm:block">
+            </div>
+            <div className="hidden sm:block">
                 <span className="block font-bold text-lg sm:text-xl power-text">RUGAL'S DOMINION</span>
-              </div>
-            </Link>
-          </div>
+            </div>
+          </Link>
+        </div>
           
           {/* Mobile Navigation */}
           <nav className="hidden md:flex flex-1 items-center justify-center">
@@ -96,7 +96,7 @@ export const SiteHeader: FC = () => {
                 More
               </Link>
             </div>
-          </nav>
+            </nav>
           
           <div className="flex items-center space-x-2 sm:space-x-3">
             {connected && (
@@ -179,8 +179,8 @@ export const SiteHeader: FC = () => {
               />
             </a>
           </div>
-        </div>
-      </header>
+      </div>
+    </header>
     </>
   )
 }

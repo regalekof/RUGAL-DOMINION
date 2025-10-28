@@ -345,13 +345,26 @@ export default function ProfilePage() {
 
   const currentStats = userStats || defaultStats
 
-  const copyReferralLink = () => {
+  const copyReferralLink = async () => {
     if (!currentStats.referral_code) return
     
-    const referralLink = `${window.location.origin}?ref=${currentStats.referral_code}`
-    navigator.clipboard.writeText(referralLink)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    try {
+      const referralLink = `${window.location.origin}?ref=${currentStats.referral_code}`
+      await navigator.clipboard.writeText(referralLink)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (error) {
+      console.error('Failed to copy referral link:', error)
+      // Fallback for older browsers
+      const textArea = document.createElement('textarea')
+      textArea.value = `${window.location.origin}?ref=${currentStats.referral_code}`
+      document.body.appendChild(textArea)
+      textArea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textArea)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
   }
 
   return (
