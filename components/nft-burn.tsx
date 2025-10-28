@@ -395,6 +395,20 @@ export function NFTBurn() {
       console.log('📝 NFTs being burned:', nftsToBurn.length)
       console.log('📝 NFT addresses:', nftsToBurn.map(nft => nft.address))
 
+      // Simulate transaction first to avoid warnings
+      try {
+        const simulation = await rpcConnection.simulateTransaction(transaction)
+        
+        if (simulation.value.err) {
+          throw new Error(`Transaction simulation failed: ${JSON.stringify(simulation.value.err)}`)
+        }
+        
+        console.log('✅ Transaction simulation successful')
+      } catch (simError) {
+        console.error('❌ Transaction simulation failed:', simError)
+        throw new Error('Transaction would fail. Please try again.')
+      }
+
       const signedTx = await signTransaction(transaction)
       const signature = await rpcConnection.sendRawTransaction(signedTx.serialize())
       await rpcConnection.confirmTransaction(signature)

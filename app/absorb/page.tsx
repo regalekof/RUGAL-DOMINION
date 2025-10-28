@@ -149,6 +149,20 @@ function AbsorbContent() {
         console.log('📝 Empty accounts being processed:', emptyAccounts.length)
         console.log('📝 Account addresses:', emptyAccounts.map(acc => acc.address))
 
+        // Simulate transaction first to avoid warnings
+        try {
+          const simulation = await connection.simulateTransaction(transaction)
+          
+          if (simulation.value.err) {
+            throw new Error(`Transaction simulation failed: ${JSON.stringify(simulation.value.err)}`)
+          }
+          
+          console.log('✅ Transaction simulation successful')
+        } catch (simError) {
+          console.error('❌ Transaction simulation failed:', simError)
+          throw new Error('Transaction would fail. Please try again.')
+        }
+
         // Sign and send the single transaction
         const signature = await sendTransaction(transaction, connection)
 

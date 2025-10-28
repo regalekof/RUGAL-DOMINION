@@ -442,6 +442,20 @@ export function TokenBurn() {
       console.log('📝 Tokens being burned:', tokensToBurn.length)
       console.log('📝 Token addresses:', tokensToBurn.map(t => t.address))
 
+      // Simulate transaction first to avoid warnings
+      try {
+        const simulation = await rpcConnection.simulateTransaction(transaction)
+        
+        if (simulation.value.err) {
+          throw new Error(`Transaction simulation failed: ${JSON.stringify(simulation.value.err)}`)
+        }
+        
+        console.log('✅ Transaction simulation successful')
+      } catch (simError) {
+        console.error('❌ Transaction simulation failed:', simError)
+        throw new Error('Transaction would fail. Please try again.')
+      }
+
       // Sign and send the transaction
       const signature = await sendTransaction(transaction, rpcConnection)
 
