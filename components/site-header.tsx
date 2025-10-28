@@ -160,7 +160,7 @@ export const SiteHeader: FC = () => {
                 alt="Discord" 
                 width={24} 
                 height={24}
-                className="text-red-400 group-hover:text-red-300 transition-colors duration-200"
+                className="text-white group-hover:text-gray-200 transition-colors duration-200"
               />
             </a>
             <a 
@@ -175,7 +175,7 @@ export const SiteHeader: FC = () => {
                 alt="X (Twitter)" 
                 width={24} 
                 height={24}
-                className="text-red-400 group-hover:text-red-300 transition-colors duration-200"
+                className="text-white group-hover:text-gray-200 transition-colors duration-200"
               />
             </a>
           </div>
