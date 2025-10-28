@@ -346,10 +346,15 @@ export default function ProfilePage() {
   const currentStats = userStats || defaultStats
 
   const copyReferralLink = async () => {
-    if (!currentStats.referral_code) return
+    // Use username as referral code, fallback to wallet address if no username
+    const referralCode = currentStats.username && currentStats.username !== 'Anonymous Warrior' 
+      ? currentStats.username.toLowerCase().trim()
+      : currentStats.referral_code || publicKey?.toString().slice(0, 8).toUpperCase()
+    
+    if (!referralCode) return
     
     try {
-      const referralLink = `${window.location.origin}?ref=${currentStats.referral_code}`
+      const referralLink = `${window.location.origin}?ref=${referralCode}`
       await navigator.clipboard.writeText(referralLink)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
@@ -357,7 +362,7 @@ export default function ProfilePage() {
       console.error('Failed to copy referral link:', error)
       // Fallback for older browsers
       const textArea = document.createElement('textarea')
-      textArea.value = `${window.location.origin}?ref=${currentStats.referral_code}`
+      textArea.value = `${window.location.origin}?ref=${referralCode}`
       document.body.appendChild(textArea)
       textArea.select()
       document.execCommand('copy')
@@ -515,7 +520,6 @@ export default function ProfilePage() {
                       size="sm"
                       variant="outline"
                       className="text-xs px-3 py-1 border-blue-500/30 text-blue-300 hover:bg-blue-500/10 eclipse-glow"
-                      disabled={!currentStats.referral_code}
                     >
                       {copied ? (
                         <>
