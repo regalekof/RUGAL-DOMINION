@@ -170,10 +170,43 @@ export function TokenBurn() {
         setIsFetching(true)
       console.log('Starting token fetch for wallet:', publicKey.toString())
         
-      // Get all token accounts
-        const tokenAccounts = await rpcConnection.getParsedTokenAccountsByOwner(publicKey, {
+      // Get all token accounts with timeout and retry logic
+        let tokenAccounts
+        let retries = 3
+        let lastError: any = null
+        
+        while (retries > 0) {
+          try {
+            // Create a timeout promise
+            const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('RPC request timeout after 30 seconds')), 30000)
+            )
+            
+            // Race between the RPC call and timeout
+            tokenAccounts = await Promise.race([
+              rpcConnection.getParsedTokenAccountsByOwner(publicKey, {
           programId: TOKEN_PROGRAM_ID,
-        })
+              }),
+              timeoutPromise
+            ]) as any
+            
+            // Success - break out of retry loop
+            break
+          } catch (error: any) {
+            lastError = error
+            retries--
+            console.warn(`RPC call failed, ${retries} retries remaining:`, error)
+            
+            if (retries > 0) {
+              // Wait before retrying (exponential backoff)
+              await new Promise(resolve => setTimeout(resolve, 1000 * (4 - retries)))
+            }
+          }
+        }
+        
+        if (!tokenAccounts) {
+          throw lastError || new Error('Failed to fetch token accounts after retries')
+        }
 
       console.log('Found token accounts:', tokenAccounts.value.length)
         
@@ -300,11 +333,25 @@ export function TokenBurn() {
       // Update state only once with all tokens
       setTokens(finalTokenList)
       setHasInitialFetch(true)
-      } catch (error) {
+      } catch (error: any) {
       console.error('Error in fetchTokens:', error)
+      
+      // Provide more specific error messages
+      let errorMessage = 'Failed to fetch tokens. Please try again.'
+      
+      if (error?.message?.includes('timeout')) {
+        errorMessage = 'RPC request timed out. The network may be slow. Please try again in a moment.'
+      } else if (error?.message?.includes('429') || error?.message?.includes('rate limit')) {
+        errorMessage = 'Too many requests. Please wait a moment and try again.'
+      } else if (error?.message?.includes('network') || error?.message?.includes('fetch')) {
+        errorMessage = 'Network error. Please check your internet connection and try again.'
+      } else if (error?.message) {
+        errorMessage = `Error: ${error.message}`
+      }
+      
         toast({
           title: 'Error',
-        description: 'Failed to fetch tokens. Please try again.',
+        description: errorMessage,
           variant: 'destructive',
         })
       } finally {
