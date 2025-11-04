@@ -307,11 +307,7 @@ export function TokenBurn() {
       setHasInitialFetch(true)
       } catch (error) {
       console.error('Error in fetchTokens:', error)
-        toast({
-          title: 'Error',
-        description: 'Failed to fetch tokens. Please try again.',
-          variant: 'destructive',
-        })
+        // Silently fail - don't show error message to user
       } finally {
         setIsFetching(false)
       }

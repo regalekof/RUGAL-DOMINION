@@ -55,8 +55,9 @@ function AbsorbContent() {
 
       setEmptyAccounts(empty)
     } catch (err) {
-      setError("Failed to find empty accounts")
+      // Silently fail - don't show error message to user
       console.error(err)
+      setError(null)
     } finally {
       setIsLoading(false)
     }

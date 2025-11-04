@@ -256,11 +256,7 @@ export function NFTBurn() {
       setHasInitialFetch(true)
     } catch (error) {
       console.error('Error in fetchNFTs:', error)
-      toast({
-        title: 'Error',
-        description: 'Failed to fetch NFTs. Please try again.',
-        variant: 'destructive',
-      })
+      // Silently fail - don't show error message to user
     } finally {
       setIsFetching(false)
     }
