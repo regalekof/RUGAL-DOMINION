@@ -1,22 +1,11 @@
 export const RPC_CONFIG = {
   // QuickNode endpoints
-  QUICKNODE_HTTP: 'https://proportionate-distinguished-frog.solana-mainnet.quiknode.pro/a7a94cbfb648ecc48da16ec6c1492c1809b9644c/',
-  QUICKNODE_WSS: 'wss://proportionate-distinguished-frog.solana-mainnet.quiknode.pro/a7a94cbfb648ecc48da16ec6c1492c1809b9644c/',
+  QUICKNODE_HTTP: 'https://quaint-green-wave.solana-mainnet.quiknode.pro/547b99bb19613b5ff403ac71268514966104dc99/',
+  QUICKNODE_WSS: 'wss://quaint-green-wave.solana-mainnet.quiknode.pro/547b99bb19613b5ff403ac71268514966104dc99/',
   
   // Backup providers
   HELIUS_API_KEY: process.env.NEXT_PUBLIC_HELIUS_API_KEY || '',
   ANKR_API_KEY: process.env.NEXT_PUBLIC_ANKR_API_KEY || '',
-
-  // Token configurations
-  TOKENS: {
-    BOOPF: {
-      address: 'Lifs4uMyAkGCrWQDJAt59Fki67CZ3wyNjiRVSqwboop',
-      symbol: 'BOOPF',
-      name: 'BOOPF Token',
-      decimals: 9,
-      logoURI: 'https://boop.fun/tokens/Lifs4uMyAkGCrWQDJAt59Fki67CZ3wyNjiRVSqwboop'
-    }
-  }
 }
 
 // Helper function to validate endpoint
