@@ -125,15 +125,20 @@ export function TokenBurn() {
     return {}
   }
 
-  // Use QuickNode endpoint with proper configuration
-  const rpcConnection = new Connection(RPC_CONFIG.QUICKNODE_HTTP, {
+  // Create connection with fallback endpoints
+  const createConnection = (endpoint: string, wsEndpoint?: string) => {
+    return new Connection(endpoint, {
     commitment: 'confirmed',
     confirmTransactionInitialTimeout: 60000,
-    wsEndpoint: RPC_CONFIG.QUICKNODE_WSS,
-    httpHeaders: {
-      'Content-Type': 'application/json',
-    }
-  })
+      wsEndpoint: wsEndpoint,
+      httpHeaders: {
+        'Content-Type': 'application/json',
+      }
+    })
+  }
+
+  // Use QuickNode endpoint with proper configuration
+  const rpcConnection = createConnection(RPC_CONFIG.QUICKNODE_HTTP, RPC_CONFIG.QUICKNODE_WSS)
 
   // Memoize the fetch function to prevent unnecessary re-renders
   // Helper function to fetch metadata from URI (based on your backend code)
@@ -170,42 +175,69 @@ export function TokenBurn() {
         setIsFetching(true)
       console.log('Starting token fetch for wallet:', publicKey.toString())
         
-      // Get all token accounts with timeout and retry logic
+      // Get all token accounts with timeout, retry, and fallback endpoints
         let tokenAccounts
-        let retries = 3
         let lastError: any = null
         
-        while (retries > 0) {
-          try {
-            // Create a timeout promise
-            const timeoutPromise = new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('RPC request timeout after 30 seconds')), 30000)
-            )
-            
-            // Race between the RPC call and timeout
-            tokenAccounts = await Promise.race([
-              rpcConnection.getParsedTokenAccountsByOwner(publicKey, {
+        // List of endpoints to try (in order of preference)
+        const endpoints = [
+          { http: RPC_CONFIG.QUICKNODE_HTTP, wss: RPC_CONFIG.QUICKNODE_WSS, name: 'QuickNode' },
+          { http: RPC_ENDPOINTS.HELIUS, wss: RPC_ENDPOINTS.HELIUS?.replace('https://', 'wss://'), name: 'Helius' },
+          { http: RPC_ENDPOINTS.ANKR, wss: RPC_ENDPOINTS.ANKR?.replace('https://', 'wss://'), name: 'Ankr' },
+          { http: RPC_ENDPOINTS.PUBLIC, wss: RPC_ENDPOINTS.PUBLIC.replace('https://', 'wss://'), name: 'Public' }
+        ].filter(e => e.http) // Only include endpoints that exist
+        
+        // Try each endpoint
+        for (const endpoint of endpoints) {
+          let retries = 2 // 2 retries per endpoint
+          const connection = createConnection(endpoint.http, endpoint.wss)
+          
+          while (retries > 0) {
+            try {
+              console.log(`Trying ${endpoint.name} endpoint...`)
+              
+              // Create a timeout promise
+              const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('RPC request timeout after 20 seconds')), 20000)
+              )
+              
+              // Race between the RPC call and timeout
+              tokenAccounts = await Promise.race([
+                connection.getParsedTokenAccountsByOwner(publicKey, {
           programId: TOKEN_PROGRAM_ID,
-              }),
-              timeoutPromise
-            ]) as any
-            
-            // Success - break out of retry loop
-            break
-          } catch (error: any) {
-            lastError = error
-            retries--
-            console.warn(`RPC call failed, ${retries} retries remaining:`, error)
-            
-            if (retries > 0) {
-              // Wait before retrying (exponential backoff)
-              await new Promise(resolve => setTimeout(resolve, 1000 * (4 - retries)))
+                }),
+                timeoutPromise
+              ]) as any
+              
+              // Success - break out of all loops
+              console.log(`✅ Successfully fetched with ${endpoint.name}`)
+              break
+            } catch (error: any) {
+              lastError = error
+              retries--
+              const isFailedFetch = error?.message?.includes('Failed to fetch') || 
+                                    error?.message?.includes('fetch') ||
+                                    error?.name === 'TypeError'
+              
+              if (isFailedFetch && retries > 0) {
+                console.warn(`${endpoint.name} failed with "Failed to fetch", retrying... (${retries} left)`)
+                await new Promise(resolve => setTimeout(resolve, 1000))
+              } else if (!isFailedFetch) {
+                // Not a network error, try next endpoint immediately
+                console.warn(`${endpoint.name} failed:`, error.message)
+                break
+              } else {
+                console.warn(`${endpoint.name} failed completely, trying next endpoint...`)
+              }
             }
           }
+          
+          // If we got token accounts, break out of endpoint loop
+          if (tokenAccounts) break
         }
         
         if (!tokenAccounts) {
-          throw lastError || new Error('Failed to fetch token accounts after retries')
+          throw lastError || new Error('Failed to fetch token accounts from all RPC endpoints. Please check your internet connection.')
         }
 
       console.log('Found token accounts:', tokenAccounts.value.length)
@@ -339,12 +371,17 @@ export function TokenBurn() {
       // Provide more specific error messages
       let errorMessage = 'Failed to fetch tokens. Please try again.'
       
-      if (error?.message?.includes('timeout')) {
+      const isFailedFetch = error?.message?.includes('Failed to fetch') || 
+                            error?.message?.includes('fetch') ||
+                            error?.name === 'TypeError' ||
+                            error?.message?.includes('network')
+      
+      if (isFailedFetch) {
+        errorMessage = 'Network error: Unable to connect to RPC endpoints. Please check your internet connection and try again.'
+      } else if (error?.message?.includes('timeout')) {
         errorMessage = 'RPC request timed out. The network may be slow. Please try again in a moment.'
       } else if (error?.message?.includes('429') || error?.message?.includes('rate limit')) {
         errorMessage = 'Too many requests. Please wait a moment and try again.'
-      } else if (error?.message?.includes('network') || error?.message?.includes('fetch')) {
-        errorMessage = 'Network error. Please check your internet connection and try again.'
       } else if (error?.message) {
         errorMessage = `Error: ${error.message}`
       }

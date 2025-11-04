@@ -293,12 +293,17 @@ export function NFTBurn() {
       // Provide more specific error messages
       let errorMessage = 'Failed to fetch NFTs. Please try again.'
       
-      if (error?.message?.includes('timeout')) {
+      const isFailedFetch = error?.message?.includes('Failed to fetch') || 
+                            error?.message?.includes('fetch') ||
+                            error?.name === 'TypeError' ||
+                            error?.message?.includes('network')
+      
+      if (isFailedFetch) {
+        errorMessage = 'Network error: Unable to connect to RPC endpoints. Please check your internet connection and try again.'
+      } else if (error?.message?.includes('timeout')) {
         errorMessage = 'RPC request timed out. The network may be slow. Please try again in a moment.'
       } else if (error?.message?.includes('429') || error?.message?.includes('rate limit')) {
         errorMessage = 'Too many requests. Please wait a moment and try again.'
-      } else if (error?.message?.includes('network') || error?.message?.includes('fetch')) {
-        errorMessage = 'Network error. Please check your internet connection and try again.'
       } else if (error?.message) {
         errorMessage = `Error: ${error.message}`
       }

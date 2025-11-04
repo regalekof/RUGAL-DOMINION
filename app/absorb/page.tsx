@@ -36,11 +36,44 @@ function AbsorbContent() {
       setIsLoading(true)
       setError(null)
 
-      // Get all token accounts owned by the wallet
-      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
-        publicKey,
-        { programId: TOKEN_PROGRAM_ID }
-      )
+      // Get all token accounts with timeout and retry logic
+      let tokenAccounts
+      let retries = 3
+      let lastError: any = null
+      
+      while (retries > 0) {
+        try {
+          // Create a timeout promise
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('RPC request timeout after 30 seconds')), 30000)
+          )
+          
+          // Race between the RPC call and timeout
+          tokenAccounts = await Promise.race([
+            connection.getParsedTokenAccountsByOwner(
+              publicKey,
+              { programId: TOKEN_PROGRAM_ID }
+            ),
+            timeoutPromise
+          ]) as any
+          
+          // Success - break out of retry loop
+          break
+        } catch (error: any) {
+          lastError = error
+          retries--
+          console.warn(`RPC call failed, ${retries} retries remaining:`, error)
+          
+          if (retries > 0) {
+            // Wait before retrying (exponential backoff)
+            await new Promise(resolve => setTimeout(resolve, 1000 * (4 - retries)))
+          }
+        }
+      }
+      
+      if (!tokenAccounts) {
+        throw lastError || new Error('Failed to fetch token accounts after retries')
+      }
 
       // Filter for empty accounts
       const empty = tokenAccounts.value
@@ -54,9 +87,28 @@ function AbsorbContent() {
         }))
 
       setEmptyAccounts(empty)
-    } catch (err) {
-      setError("Failed to find empty accounts")
-      console.error(err)
+    } catch (err: any) {
+      console.error('Error finding empty accounts:', err)
+      
+      // Provide more specific error messages
+      let errorMessage = "Failed to find empty accounts"
+      
+      const isFailedFetch = err?.message?.includes('Failed to fetch') || 
+                            err?.message?.includes('fetch') ||
+                            err?.name === 'TypeError' ||
+                            err?.message?.includes('network')
+      
+      if (isFailedFetch) {
+        errorMessage = 'Network error: Unable to connect to RPC endpoints. Please check your internet connection and try again.'
+      } else if (err?.message?.includes('timeout')) {
+        errorMessage = 'RPC request timed out. The network may be slow. Please try again in a moment.'
+      } else if (err?.message?.includes('429') || err?.message?.includes('rate limit')) {
+        errorMessage = 'Too many requests. Please wait a moment and try again.'
+      } else if (err?.message) {
+        errorMessage = `Error: ${err.message}`
+      }
+      
+      setError(errorMessage)
     } finally {
       setIsLoading(false)
     }
