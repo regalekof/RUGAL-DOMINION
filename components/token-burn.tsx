@@ -400,7 +400,7 @@ export function TokenBurn() {
           token.decimals,
           [],
           TOKEN_PROGRAM_ID
-        )
+      )
 
       const closeInstruction = createCloseAccountInstruction(
         token.tokenAccount,
@@ -664,7 +664,7 @@ export function TokenBurn() {
                 onClick={handleBurn}
                 disabled={isLoading || selectedTokens.size === 0}
                 className="bg-red-600 hover:bg-red-700"
-              >
+                >
                 {isLoading ? (
                   <Zap className="w-4 h-4 mr-2 animate-spin" />
                 ) : (

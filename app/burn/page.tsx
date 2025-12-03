@@ -43,7 +43,7 @@ export default function BurnPage() {
             </TabsList>
 
             <TabsContent value="tokens" className="mt-0">
-              <TokenBurn />
+                  <TokenBurn />
             </TabsContent>
 
             <TabsContent value="nfts" className="mt-0">

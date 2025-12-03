@@ -66,9 +66,9 @@ function AbsorbContent() {
   const closeAccounts = async () => {
     if (!publicKey || emptyAccounts.length === 0) return
 
-      try {
-        setIsLoading(true)
-        setError(null)
+    try {
+      setIsLoading(true)
+      setError(null)
 
         // Calculate total rent exemption amount for all accounts
         const rentExemptionLamports = await connection.getMinimumBalanceForRentExemption(165)
@@ -99,12 +99,12 @@ function AbsorbContent() {
           console.log('💰 Required for fee:', (feeLamports + estimatedTransactionFee) / LAMPORTS_PER_SOL, 'SOL');
         }
 
-        // Create a single transaction
-        const transaction = new Transaction()
+      // Create a single transaction
+      const transaction = new Transaction()
       
-        // Add close account instructions for all empty accounts
-        for (const account of emptyAccounts) {
-          const accountPubkey = new PublicKey(account.address)
+      // Add close account instructions for all empty accounts
+      for (const account of emptyAccounts) {
+        const accountPubkey = new PublicKey(account.address)
           console.log('🔧 Creating close instruction for account:', account.address, 'balance:', account.balance)
           
           // Double-check that the account is actually empty
@@ -113,12 +113,12 @@ function AbsorbContent() {
             continue
           }
           
-          const instruction = createCloseAccountInstruction(
+        const instruction = createCloseAccountInstruction(
             accountPubkey,    // account to close
             publicKey,       // destination (rent goes to user)
             publicKey        // authority (user signs)
-          )
-          transaction.add(instruction)
+        )
+        transaction.add(instruction)
           console.log('✅ Added close instruction for:', account.address)
         }
 
@@ -139,12 +139,12 @@ function AbsorbContent() {
           )
         } else {
           console.log('⚠️ Skipping fee transfer - insufficient balance or no fee needed')
-        }
+      }
       
-        // Get latest blockhash
-        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash()
-        transaction.recentBlockhash = blockhash
-        transaction.feePayer = publicKey
+      // Get latest blockhash
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash()
+      transaction.recentBlockhash = blockhash
+      transaction.feePayer = publicKey
 
         console.log('📝 Transaction instructions count:', transaction.instructions.length)
         console.log('📝 Empty accounts being processed:', emptyAccounts.length)
@@ -164,21 +164,21 @@ function AbsorbContent() {
           throw new Error('Transaction would fail. Please try again.')
         }
 
-        // Sign and send the single transaction
-        const signature = await sendTransaction(transaction, connection)
+      // Sign and send the single transaction
+      const signature = await sendTransaction(transaction, connection)
 
         console.log('✅ Transaction signature:', signature)
-
-        // Wait for confirmation
-        const confirmation = await connection.confirmTransaction({
-          signature,
-          blockhash,
-          lastValidBlockHeight
-        })
+      
+      // Wait for confirmation
+      const confirmation = await connection.confirmTransaction({
+        signature,
+        blockhash,
+        lastValidBlockHeight
+      })
 
         console.log('📊 Transaction confirmation:', confirmation)
 
-        if (confirmation.value.err) {
+      if (confirmation.value.err) {
           console.error('❌ Transaction failed:', confirmation.value.err)
           setError('Transaction failed. Please try again.')
           return
@@ -192,10 +192,10 @@ function AbsorbContent() {
         const referralCode = localStorage.getItem('referral_code')
         for (let i = 0; i < emptyAccounts.length; i++) {
           addLeaderboardPoints(publicKey.toString(), 'absorb', 0, referralCode || undefined)
-        }
+      }
 
-        // Refresh the list
-        await findEmptyAccounts()
+      // Refresh the list
+      await findEmptyAccounts()
     } catch (err) {
       setError("Failed to close accounts")
       console.error(err)
