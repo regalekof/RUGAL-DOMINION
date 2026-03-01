@@ -7,6 +7,16 @@ try {
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  transpilePackages: [
+    '@solana/wallet-adapter-base',
+    '@solana/wallet-adapter-react',
+    '@solana/wallet-adapter-react-ui',
+    '@solana/wallet-adapter-phantom',
+    '@solana/wallet-adapter-solflare',
+    '@solana/wallet-adapter-wallets',
+    '@solana/web3.js',
+    '@solana/spl-token',
+  ],
   eslint: {
     ignoreDuringBuilds: true,
   },
