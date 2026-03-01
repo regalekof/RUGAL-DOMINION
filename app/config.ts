@@ -1,8 +1,8 @@
 export const RPC_CONFIG = {
-  // QuickNode endpoints
-  QUICKNODE_HTTP: 'https://quaint-green-wave.solana-mainnet.quiknode.pro/547b99bb19613b5ff403ac71268514966104dc99/',
-  QUICKNODE_WSS: 'wss://quaint-green-wave.solana-mainnet.quiknode.pro/547b99bb19613b5ff403ac71268514966104dc99/',
-  
+  // Primary RPC – set in .env.local (never commit real URLs)
+  RPC_HTTP: process.env.NEXT_PUBLIC_RPC_HTTP || '',
+  RPC_WSS: process.env.NEXT_PUBLIC_RPC_WSS || '',
+
   // Backup providers
   HELIUS_API_KEY: process.env.NEXT_PUBLIC_HELIUS_API_KEY || '',
   ANKR_API_KEY: process.env.NEXT_PUBLIC_ANKR_API_KEY || '',
@@ -17,9 +17,9 @@ const getValidEndpoint = (endpoint: string) => {
 }
 
 export const RPC_ENDPOINTS = {
-  // Primary endpoints - QuickNode
-  QUICKNODE_HTTP: RPC_CONFIG.QUICKNODE_HTTP,
-  QUICKNODE_WSS: RPC_CONFIG.QUICKNODE_WSS,
+  // Primary (from env)
+  RPC_HTTP: getValidEndpoint(RPC_CONFIG.RPC_HTTP) || null,
+  RPC_WSS: getValidEndpoint(RPC_CONFIG.RPC_WSS) || null,
   
   // Backup endpoints
   HELIUS: getValidEndpoint(`https://mainnet.helius-rpc.com/?api-key=${RPC_CONFIG.HELIUS_API_KEY}`),
@@ -31,11 +31,11 @@ export const RPC_ENDPOINTS = {
 
 // Get the best available endpoint with WebSocket support
 export const getBestEndpoint = () => {
-  // Try QuickNode first
-  if (RPC_ENDPOINTS.QUICKNODE_HTTP && RPC_ENDPOINTS.QUICKNODE_WSS) {
+  // Primary RPC from env first
+  if (RPC_ENDPOINTS.RPC_HTTP && RPC_ENDPOINTS.RPC_WSS) {
     return {
-      http: RPC_ENDPOINTS.QUICKNODE_HTTP,
-      wss: RPC_ENDPOINTS.QUICKNODE_WSS
+      http: RPC_ENDPOINTS.RPC_HTTP,
+      wss: RPC_ENDPOINTS.RPC_WSS
     }
   }
   

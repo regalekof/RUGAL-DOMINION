@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { Flame, Zap, ExternalLink, CheckCircle } from 'lucide-react'
 import Image from 'next/image'
-import { RPC_CONFIG } from '@/app/config'
+import { getBestEndpoint } from '@/app/config'
 import { addLeaderboardPoints } from '@/components/leaderboard'
 
 // Fee wallet address
@@ -124,11 +124,11 @@ export function NFTBurn() {
   const [hasInitialFetch, setHasInitialFetch] = useState(false)
   const [successTx, setSuccessTx] = useState<string | null>(null)
 
-  // Use QuickNode endpoint with proper configuration
-  const rpcConnection = new Connection(RPC_CONFIG.QUICKNODE_HTTP, {
+  const { http: rpcHttp, wss: rpcWss } = getBestEndpoint()
+  const rpcConnection = new Connection(rpcHttp, {
     commitment: 'confirmed',
     confirmTransactionInitialTimeout: 60000,
-    wsEndpoint: RPC_CONFIG.QUICKNODE_WSS,
+    wsEndpoint: rpcWss,
     httpHeaders: {
       'Content-Type': 'application/json',
     }

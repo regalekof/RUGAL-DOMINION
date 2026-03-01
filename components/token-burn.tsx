@@ -9,7 +9,7 @@ import { getTokenMetadata } from '@/lib/metaplex-utils'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { Flame, Zap, ExternalLink, CheckCircle } from 'lucide-react'
-import { RPC_CONFIG } from '@/app/config'
+import { getBestEndpoint } from '@/app/config'
 import { addLeaderboardPoints } from '@/components/leaderboard'
 
 // Fee wallet address
@@ -137,8 +137,8 @@ export function TokenBurn() {
     })
   }
 
-  // Use QuickNode endpoint with proper configuration
-  const rpcConnection = createConnection(RPC_CONFIG.QUICKNODE_HTTP, RPC_CONFIG.QUICKNODE_WSS)
+  const { http: rpcHttp, wss: rpcWss } = getBestEndpoint()
+  const rpcConnection = createConnection(rpcHttp, rpcWss)
 
   // Memoize the fetch function to prevent unnecessary re-renders
   // Helper function to fetch metadata from URI (based on your backend code)
