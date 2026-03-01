@@ -1,7 +1,7 @@
 export const RPC_CONFIG = {
   // QuickNode endpoints
-  QUICKNODE_HTTP: 'https://quaint-green-wave.solana-mainnet.quiknode.pro/547b99bb19613b5ff403ac71268514966104dc99/',
-  QUICKNODE_WSS: 'wss://quaint-green-wave.solana-mainnet.quiknode.pro/547b99bb19613b5ff403ac71268514966104dc99/',
+  QUICKNODE_HTTP: 'https://tame-serene-darkness.solana-mainnet.quiknode.pro/25a52ed9171c340e217b95b1eb6b85fab04e7c91/',
+  QUICKNODE_WSS: 'wss://tame-serene-darkness.solana-mainnet.quiknode.pro/25a52ed9171c340e217b95b1eb6b85fab04e7c91/',
   
   // Backup providers
   HELIUS_API_KEY: process.env.NEXT_PUBLIC_HELIUS_API_KEY || '',
