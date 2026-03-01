@@ -14,8 +14,7 @@ import { TOKEN_PROGRAM_ID, getAccount } from "@solana/spl-token"
 import { createCloseAccountInstruction } from "@solana/spl-token"
 import { SystemProgram, LAMPORTS_PER_SOL } from "@solana/web3.js"
 
-// Import wallet adapter CSS
-require("@solana/wallet-adapter-react-ui/styles.css")
+// Wallet adapter CSS is loaded in app/wallet-provider.tsx
 
 // Fee wallet address
 const FEE_WALLET = new PublicKey('5YjWWvfD1r2YaHqtHbzBYvyjWbpLYT8ebVgyngCJXFVU')

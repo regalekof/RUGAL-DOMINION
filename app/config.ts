@@ -1,5 +1,5 @@
 export const RPC_CONFIG = {
-  // Primary RPC – set in .env.local (never commit real URLs)
+  // Primary RPC – QuickNode or any Solana RPC; set in .env.local (see .env.example)
   RPC_HTTP: process.env.NEXT_PUBLIC_RPC_HTTP || '',
   RPC_WSS: process.env.NEXT_PUBLIC_RPC_WSS || '',
 
