@@ -9,6 +9,8 @@ declare global {
       header: React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement>
       nav: React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement>
       button: React.DetailedHTMLProps<React.ButtonHTMLAttributes<HTMLButtonElement>, HTMLButtonElement>
+      main: React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement>
+      h1: React.DetailedHTMLProps<React.HTMLAttributes<HTMLHeadingElement>, HTMLHeadingElement>
     }
   }
 }
