@@ -160,10 +160,7 @@ function AbsorbContent() {
 
         // Sign first, then simulate and submit the exact signed payload.
         const signedTransaction = await signTransaction(transaction)
-        const simulation = await connection.simulateTransaction(signedTransaction, {
-          commitment: 'confirmed',
-          sigVerify: true,
-        })
+        const simulation = await connection.simulateTransaction(signedTransaction)
 
         if (simulation.value.err) {
           const logs = simulation.value.logs?.slice(-4).join(' | ')
