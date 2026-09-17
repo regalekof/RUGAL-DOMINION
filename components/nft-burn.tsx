@@ -388,10 +388,7 @@ export function NFTBurn() {
 
         // Sign first, then simulate and submit the exact signed payload.
         const signedTx = await signTransaction(transaction)
-        const simulation = await connection.simulateTransaction(signedTx, {
-          commitment: 'confirmed',
-          sigVerify: true,
-        })
+        const simulation = await connection.simulateTransaction(signedTx)
 
         if (simulation.value.err) {
           const logs = simulation.value.logs?.slice(-4).join(' | ')

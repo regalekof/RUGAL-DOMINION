@@ -438,26 +438,37 @@ export function TokenBurn() {
       console.log('📝 Tokens being burned:', tokensToBurn.length)
       console.log('📝 Token addresses:', tokensToBurn.map(t => t.address))
 
-      // Simulate before asking the wallet to sign. Keep the RPC logs so failures are actionable.
-      const signedTransaction = await signTransaction(transaction)
-      const simulation = await connection.simulateTransaction(signedTransaction, {
-        commitment: 'confirmed',
-        sigVerify: true,
-      })
+     // Sign first, then simulate the exact signed transaction.
+const signedTransaction = await signTransaction(transaction)
 
-      if (simulation.value.err) {
-        const logs = simulation.value.logs?.slice(-4).join(' | ')
-        console.error('❌ Transaction simulation failed:', simulation.value.err, simulation.value.logs)
-        throw new Error(`Transaction simulation failed: ${JSON.stringify(simulation.value.err)}${logs ? ` (${logs})` : ''}`)
-      }
+const simulation = await connection.simulateTransaction(signedTransaction)
 
-      console.log('✅ Transaction simulation successful')
+if (simulation.value.err) {
+  const logs = simulation.value.logs?.slice(-4).join(' | ')
 
-      // Send the exact transaction that was signed and simulated.
-      const signature = await connection.sendRawTransaction(signedTransaction.serialize(), {
-        skipPreflight: true,
-        maxRetries: 3,
-      })
+  console.error(
+    '❌ Transaction simulation failed:',
+    simulation.value.err,
+    simulation.value.logs
+  )
+
+  throw new Error(
+    `Transaction simulation failed: ${JSON.stringify(simulation.value.err)}${
+      logs ? ` (${logs})` : ''
+    }`
+  )
+}
+
+console.log('✅ Transaction simulation successful')
+
+// Send the exact transaction that was signed and simulated.
+const signature = await connection.sendRawTransaction(
+  signedTransaction.serialize(),
+  {
+    skipPreflight: true,
+    maxRetries: 3,
+  }
+)
 
       console.log('✅ Transaction signature:', signature)
       
