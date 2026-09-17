@@ -107,7 +107,7 @@ export function Leaderboard() {
         .subscribe()
 
       return () => {
-        supabase.removeChannel(channel)
+        supabase?.removeChannel(channel)
       }
     }
   }, [])
@@ -332,4 +332,3 @@ function addToLocalStorage(
     throw error
   }
 }
-

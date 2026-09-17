@@ -5,7 +5,6 @@ import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui'
 import { PhantomWalletAdapter } from '@solana/wallet-adapter-phantom'
 import { SolflareWalletAdapter } from '@solana/wallet-adapter-solflare'
-import { Connection } from '@solana/web3.js'
 import { getBestEndpoint } from './config'
 
 // Import wallet adapter styles
@@ -16,7 +15,6 @@ interface Props {
 }
 
 export const WalletContextProvider: FC<Props> = ({ children }) => {
-  // Use both HTTP and WSS endpoints
   const { http: endpoint, wss: wsEndpoint } = useMemo(() => getBestEndpoint(), [])
   
   const wallets = useMemo(
@@ -27,8 +25,11 @@ export const WalletContextProvider: FC<Props> = ({ children }) => {
     []
   )
 
-  // Ensure wsEndpoint is undefined if null
-  const connectionConfig = wsEndpoint ? { wsEndpoint } : undefined
+  const connectionConfig = useMemo(() => ({
+    commitment: 'confirmed' as const,
+    confirmTransactionInitialTimeout: 60000,
+    wsEndpoint,
+  }), [wsEndpoint])
 
   return (
     <ConnectionProvider endpoint={endpoint} config={connectionConfig}>

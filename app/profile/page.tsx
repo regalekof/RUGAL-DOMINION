@@ -120,6 +120,7 @@ export default function ProfilePage() {
   const [isLoading, setIsLoading] = useState(true)
   const [showUsernameSetup, setShowUsernameSetup] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [refreshVersion, setRefreshVersion] = useState(0)
 
   useEffect(() => {
     if (!publicKey) {
@@ -185,6 +186,8 @@ export default function ProfilePage() {
               token_burns: userEntry.tokenBurns || 0,
               nft_burns: userEntry.nftBurns || 0,
               total_fees_paid: userEntry.totalFeesPaid || 0,
+              referrals_count: userEntry.referrals_count || 0,
+              referral_rewards: userEntry.referral_rewards || 0,
               last_activity: userEntry.lastActivity,
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString()
@@ -219,10 +222,10 @@ export default function ProfilePage() {
         .subscribe()
 
       return () => {
-        supabase.removeChannel(channel)
+        supabase?.removeChannel(channel)
       }
     }
-  }, [publicKey])
+  }, [publicKey, refreshVersion])
 
 
   const formatDate = (dateString: string) => {
@@ -316,7 +319,7 @@ export default function ProfilePage() {
           <div className="flex justify-center">
             <UsernameSetup onComplete={() => {
               setShowUsernameSetup(false)
-              loadUserStats() // Reload stats after setup
+              setRefreshVersion(version => version + 1)
             }} />
           </div>
         </main>

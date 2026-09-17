@@ -20,7 +20,6 @@ export async function getTokenMetadata(
     
     // Create UMI instance
     const umi = createUmi(rpcEndpoint)
-    console.log('🔍 UMI created with endpoint:', rpcEndpoint)
     
     // Convert mint string to UMI publicKey
     const mintPubkey = umiPublicKey(mint)

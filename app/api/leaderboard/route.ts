@@ -3,6 +3,9 @@ import { supabase } from '@/lib/supabase'
 
 // GET /api/leaderboard - Get leaderboard data
 export async function GET() {
+  if (!supabase) {
+    return NextResponse.json({ error: 'Leaderboard database is not configured' }, { status: 503 })
+  }
   try {
     const { data, error } = await supabase
       .from('leaderboard_entries')
@@ -24,6 +27,9 @@ export async function GET() {
 
 // POST /api/leaderboard - Add or update leaderboard entry
 export async function POST(request: NextRequest) {
+  if (!supabase) {
+    return NextResponse.json({ error: 'Leaderboard database is not configured' }, { status: 503 })
+  }
   try {
     const body = await request.json()
     const { wallet, action, feesPaid, referralCode } = body

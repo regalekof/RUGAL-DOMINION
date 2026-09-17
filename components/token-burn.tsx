@@ -3,18 +3,18 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { useConnection } from '@solana/wallet-adapter-react'
-import { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js'
-import { TOKEN_PROGRAM_ID, createBurnCheckedInstruction, getAccount, createCloseAccountInstruction, getMint } from '@solana/spl-token'
+import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js'
+import { TOKEN_PROGRAM_ID, createBurnCheckedInstruction, createCloseAccountInstruction } from '@solana/spl-token'
 import { getTokenMetadata } from '@/lib/metaplex-utils'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { Flame, Zap, ExternalLink, CheckCircle } from 'lucide-react'
-import { getBestEndpoint } from '@/app/config'
 import { addLeaderboardPoints } from '@/components/leaderboard'
 
 // Fee wallet address
 const FEE_WALLET = new PublicKey('5YjWWvfD1r2YaHqtHbzBYvyjWbpLYT8ebVgyngCJXFVU')
 const FEE_PERCENTAGE = 2.0 // 2.0% fee
+const MIN_TRANSACTION_BALANCE_LAMPORTS = 10_000
 
 interface Token {
   address: string
@@ -22,6 +22,7 @@ interface Token {
   name: string
   symbol: string
   balance: number
+  amount: string
   decimals: number
   tokenAccount: PublicKey
   image?: string
@@ -47,7 +48,7 @@ interface TokenAccount {
 }
 
 export function TokenBurn() {
-  const { publicKey, sendTransaction } = useWallet()
+  const { publicKey, signTransaction } = useWallet()
   const { connection } = useConnection()
   const { toast } = useToast()
   const [isLoading, setIsLoading] = useState(false)
@@ -125,20 +126,7 @@ export function TokenBurn() {
     return {}
   }
 
-  // Create connection with fallback endpoints
-  const createConnection = (endpoint: string, wsEndpoint?: string) => {
-    return new Connection(endpoint, {
-    commitment: 'confirmed',
-    confirmTransactionInitialTimeout: 60000,
-      wsEndpoint: wsEndpoint,
-      httpHeaders: {
-        'Content-Type': 'application/json',
-      }
-    })
-  }
-
-  const { http: rpcHttp, wss: rpcWss } = getBestEndpoint()
-  const rpcConnection = createConnection(rpcHttp, rpcWss)
+  // Reuse the shared Helius connection from ConnectionProvider.
 
   // Memoize the fetch function to prevent unnecessary re-renders
   // Helper function to fetch metadata from URI (based on your backend code)
@@ -176,7 +164,7 @@ export function TokenBurn() {
       console.log('Starting token fetch for wallet:', publicKey.toString())
         
       // Get all token accounts
-        const tokenAccounts = await rpcConnection.getParsedTokenAccountsByOwner(publicKey, {
+        const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
           programId: TOKEN_PROGRAM_ID,
         })
 
@@ -188,8 +176,8 @@ export function TokenBurn() {
           const parsedInfo = account.data.parsed.info
           const tokenAmount = parsedInfo.tokenAmount
           // Exclude NFTs: tokens with amount = 1 and decimals = 0
-          const isNFT = tokenAmount.uiAmount === 1 && tokenAmount.decimals === 0
-          return tokenAmount.uiAmount > 0 && !isNFT
+          const isNFT = tokenAmount.amount === '1' && tokenAmount.decimals === 0
+          return tokenAmount.amount !== '0' && !isNFT
         })
         .map(async ({ account, pubkey }) => {
           const parsedInfo = account.data.parsed.info
@@ -197,8 +185,6 @@ export function TokenBurn() {
           
           try {
             // Get token metadata
-            const tokenAccount = await getAccount(rpcConnection, pubkey)
-            
             // Fetch token metadata using Solana SDK (proper approach)
             let tokenName = `Token ${parsedInfo.mint.slice(0, 8)}`
             let tokenSymbol = parsedInfo.mint.slice(0, 4).toUpperCase()
@@ -235,7 +221,7 @@ export function TokenBurn() {
                 console.log('🔍 Fetching metadata for:', parsedInfo.mint)
                 
                 // Get token metadata using Jupiter API + Solana Token List
-                const metadata = await getTokenMetadata(rpcConnection.rpcEndpoint, parsedInfo.mint)
+                const metadata = await getTokenMetadata(connection.rpcEndpoint, parsedInfo.mint)
                 
                 if (metadata && metadata.name) {
                   console.log('✅ Found metadata:', metadata)
@@ -283,6 +269,7 @@ export function TokenBurn() {
               name: tokenName,
               symbol: tokenSymbol,
               balance: parsedInfo.tokenAmount.uiAmount,
+              amount: parsedInfo.tokenAmount.amount,
               decimals: parsedInfo.tokenAmount.decimals,
                 tokenAccount: pubkey,
               image: tokenImage,
@@ -311,7 +298,7 @@ export function TokenBurn() {
       } finally {
         setIsFetching(false)
       }
-  }, [publicKey, toast, rpcConnection])
+  }, [publicKey, toast, connection, signTransaction])
 
   // Only fetch tokens when the wallet is connected and hasn't been fetched before
   useEffect(() => {
@@ -358,16 +345,24 @@ export function TokenBurn() {
 
     try {
       setIsLoading(true)
+
+      if (!signTransaction) {
+        throw new Error('This wallet does not support transaction signing.')
+      }
       
       const tokensToBurn = tokens.filter(token => selectedTokens.has(token.address))
       
       // Calculate rent exemption amount
-      const rentExemptionLamports = await rpcConnection.getMinimumBalanceForRentExemption(165)
+      const rentExemptionLamports = await connection.getMinimumBalanceForRentExemption(165)
       const feeLamports = Math.floor(rentExemptionLamports * (FEE_PERCENTAGE / 100))
 
       // Check user's balance before attempting transfer
-      const userBalance = await rpcConnection.getBalance(publicKey)
-      const estimatedTransactionFee = 5000 // Estimated transaction fee in lamports
+      const userBalance = await connection.getBalance(publicKey)
+      const estimatedTransactionFee = MIN_TRANSACTION_BALANCE_LAMPORTS
+
+      if (userBalance < estimatedTransactionFee) {
+        throw new Error(`This transaction needs at least ${estimatedTransactionFee / LAMPORTS_PER_SOL} SOL for network fees.`)
+      }
       
       console.log('🔍 Token Burn Debug:', {
         rentExemptionLamports,
@@ -396,7 +391,7 @@ export function TokenBurn() {
         token.tokenAccount,
           new PublicKey(token.mint),
         publicKey,
-          Math.floor(token.balance * Math.pow(10, token.decimals)),
+          BigInt(token.amount),
           token.decimals,
           [],
           TOKEN_PROGRAM_ID
@@ -435,7 +430,7 @@ export function TokenBurn() {
       }
 
       // Get latest blockhash
-      const { blockhash, lastValidBlockHeight } = await rpcConnection.getLatestBlockhash()
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash()
       transaction.recentBlockhash = blockhash
       transaction.feePayer = publicKey
 
@@ -443,27 +438,31 @@ export function TokenBurn() {
       console.log('📝 Tokens being burned:', tokensToBurn.length)
       console.log('📝 Token addresses:', tokensToBurn.map(t => t.address))
 
-      // Simulate transaction first to avoid warnings
-      try {
-        const simulation = await rpcConnection.simulateTransaction(transaction)
-        
-        if (simulation.value.err) {
-          throw new Error(`Transaction simulation failed: ${JSON.stringify(simulation.value.err)}`)
-        }
-        
-        console.log('✅ Transaction simulation successful')
-      } catch (simError) {
-        console.error('❌ Transaction simulation failed:', simError)
-        throw new Error('Transaction would fail. Please try again.')
+      // Simulate before asking the wallet to sign. Keep the RPC logs so failures are actionable.
+      const signedTransaction = await signTransaction(transaction)
+      const simulation = await connection.simulateTransaction(signedTransaction, {
+        commitment: 'confirmed',
+        sigVerify: true,
+      })
+
+      if (simulation.value.err) {
+        const logs = simulation.value.logs?.slice(-4).join(' | ')
+        console.error('❌ Transaction simulation failed:', simulation.value.err, simulation.value.logs)
+        throw new Error(`Transaction simulation failed: ${JSON.stringify(simulation.value.err)}${logs ? ` (${logs})` : ''}`)
       }
 
-      // Sign and send the transaction
-      const signature = await sendTransaction(transaction, rpcConnection)
+      console.log('✅ Transaction simulation successful')
+
+      // Send the exact transaction that was signed and simulated.
+      const signature = await connection.sendRawTransaction(signedTransaction.serialize(), {
+        skipPreflight: true,
+        maxRetries: 3,
+      })
 
       console.log('✅ Transaction signature:', signature)
       
       // Wait for confirmation
-      const confirmation = await rpcConnection.confirmTransaction({
+      const confirmation = await connection.confirmTransaction({
         signature,
         blockhash,
         lastValidBlockHeight

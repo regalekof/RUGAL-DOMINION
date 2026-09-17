@@ -66,6 +66,7 @@ jspm_packages/
 
 # next.js build output
 .next
+*.tsbuildinfo
 
 # nuxt.js build output
 .nuxt

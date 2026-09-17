@@ -19,9 +19,10 @@ import { SystemProgram, LAMPORTS_PER_SOL } from "@solana/web3.js"
 // Fee wallet address
 const FEE_WALLET = new PublicKey('5YjWWvfD1r2YaHqtHbzBYvyjWbpLYT8ebVgyngCJXFVU')
 const FEE_PERCENTAGE = 2.0 // 2.0% fee
+const MIN_TRANSACTION_BALANCE_LAMPORTS = 10_000
 
 function AbsorbContent() {
-  const { publicKey, sendTransaction } = useWallet()
+  const { publicKey, signTransaction } = useWallet()
   const { connection } = useConnection()
   const [emptyAccounts, setEmptyAccounts] = useState<{ address: string; balance: number }[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -76,7 +77,11 @@ function AbsorbContent() {
 
         // Check user's balance before attempting transfer
         const userBalance = await connection.getBalance(publicKey)
-        const estimatedTransactionFee = 5000 // Estimated transaction fee in lamports
+        const estimatedTransactionFee = MIN_TRANSACTION_BALANCE_LAMPORTS
+
+        if (userBalance < estimatedTransactionFee) {
+          throw new Error(`This transaction needs at least ${estimatedTransactionFee / LAMPORTS_PER_SOL} SOL for network fees.`)
+        }
         
         console.log('🔍 Transaction Debug:', {
           rentExemptionLamports,
@@ -149,22 +154,29 @@ function AbsorbContent() {
         console.log('📝 Empty accounts being processed:', emptyAccounts.length)
         console.log('📝 Account addresses:', emptyAccounts.map(acc => acc.address))
 
-        // Simulate transaction first to avoid warnings
-        try {
-          const simulation = await connection.simulateTransaction(transaction)
-          
-          if (simulation.value.err) {
-            throw new Error(`Transaction simulation failed: ${JSON.stringify(simulation.value.err)}`)
-          }
-          
-          console.log('✅ Transaction simulation successful')
-        } catch (simError) {
-          console.error('❌ Transaction simulation failed:', simError)
-          throw new Error('Transaction would fail. Please try again.')
+        if (!signTransaction) {
+          throw new Error('This wallet does not support transaction signing.')
         }
 
-      // Sign and send the single transaction
-      const signature = await sendTransaction(transaction, connection)
+        // Sign first, then simulate and submit the exact signed payload.
+        const signedTransaction = await signTransaction(transaction)
+        const simulation = await connection.simulateTransaction(signedTransaction, {
+          commitment: 'confirmed',
+          sigVerify: true,
+        })
+
+        if (simulation.value.err) {
+          const logs = simulation.value.logs?.slice(-4).join(' | ')
+          console.error('❌ Transaction simulation failed:', simulation.value.err, simulation.value.logs)
+          throw new Error(`Transaction simulation failed: ${JSON.stringify(simulation.value.err)}${logs ? ` (${logs})` : ''}`)
+        }
+
+        console.log('✅ Transaction simulation successful')
+
+      const signature = await connection.sendRawTransaction(signedTransaction.serialize(), {
+        skipPreflight: true,
+        maxRetries: 3,
+      })
 
         console.log('✅ Transaction signature:', signature)
       
@@ -316,4 +328,3 @@ function AbsorbContent() {
 export default function AbsorbPage() {
   return <AbsorbContent />
 }
-

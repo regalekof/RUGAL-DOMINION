@@ -13,6 +13,8 @@ interface ReferralStats {
   referral_rewards: number
 }
 
+const generateReferralCode = () => crypto.randomUUID().replaceAll('-', '').slice(0, 16)
+
 export default function ReferralSystem() {
   const { publicKey, connected } = useWallet()
   const [referralStats, setReferralStats] = useState<ReferralStats | null>(null)
@@ -31,6 +33,7 @@ export default function ReferralSystem() {
   }, [publicKey, connected])
 
   const loadReferralStats = async () => {
+    if (!publicKey) return
     try {
       if (!supabase) {
         // Fallback to localStorage
@@ -82,7 +85,7 @@ export default function ReferralSystem() {
   }
 
   const generateCustomReferralCode = async () => {
-    if (!customCode.trim()) return
+    if (!publicKey || !customCode.trim()) return
     
     setIsGenerating(true)
     try {

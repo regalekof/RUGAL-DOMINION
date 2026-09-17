@@ -1,20 +1,20 @@
 "use client"
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { useWallet } from '@solana/wallet-adapter-react'
-import { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js'
+import { useWallet, useConnection } from '@solana/wallet-adapter-react'
+import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, createBurnCheckedInstruction, getAccount, createCloseAccountInstruction } from '@solana/spl-token'
 import { Metaplex } from '@metaplex-foundation/js'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { Flame, Zap, ExternalLink, CheckCircle } from 'lucide-react'
 import Image from 'next/image'
-import { getBestEndpoint } from '@/app/config'
 import { addLeaderboardPoints } from '@/components/leaderboard'
 
 // Fee wallet address
 const FEE_WALLET = new PublicKey('5YjWWvfD1r2YaHqtHbzBYvyjWbpLYT8ebVgyngCJXFVU')
 const FEE_PERCENTAGE = 2.0 // 2.0% fee
+const MIN_TRANSACTION_BALANCE_LAMPORTS = 10_000
 
 interface NFT {
   address: string
@@ -116,6 +116,7 @@ const retryWithBackoff = async (
 
 export function NFTBurn() {
   const { publicKey, signTransaction } = useWallet()
+  const { connection } = useConnection()
   const { toast } = useToast()
   const [isLoading, setIsLoading] = useState(false)
   const [nfts, setNfts] = useState<NFT[]>([])
@@ -124,18 +125,8 @@ export function NFTBurn() {
   const [hasInitialFetch, setHasInitialFetch] = useState(false)
   const [successTx, setSuccessTx] = useState<string | null>(null)
 
-  const { http: rpcHttp, wss: rpcWss } = getBestEndpoint()
-  const rpcConnection = new Connection(rpcHttp, {
-    commitment: 'confirmed',
-    confirmTransactionInitialTimeout: 60000,
-    wsEndpoint: rpcWss,
-    httpHeaders: {
-      'Content-Type': 'application/json',
-    }
-  })
-
   // Create Metaplex instance with proper configuration
-  const metaplex = new Metaplex(rpcConnection)
+  const metaplex = useMemo(() => new Metaplex(connection), [connection])
 
   // Memoize the fetch function to prevent unnecessary re-renders
   const fetchNFTs = useCallback(async () => {
@@ -149,7 +140,7 @@ export function NFTBurn() {
       console.log('Starting NFT fetch for wallet:', publicKey.toString())
       
       // Get all token accounts
-      const tokenAccounts = await rpcConnection.getParsedTokenAccountsByOwner(publicKey, {
+      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
         programId: TOKEN_PROGRAM_ID,
       })
 
@@ -260,7 +251,7 @@ export function NFTBurn() {
     } finally {
       setIsFetching(false)
     }
-  }, [publicKey, toast, rpcConnection, metaplex])
+  }, [publicKey, toast, connection, metaplex])
 
   // Only fetch NFTs when the wallet is connected and hasn't been fetched before
   useEffect(() => {
@@ -311,12 +302,16 @@ export function NFTBurn() {
       const nftsToBurn = nfts.filter(nft => selectedNFTs.has(nft.address))
       
       // Calculate rent exemption amount
-      const rentExemptionLamports = await rpcConnection.getMinimumBalanceForRentExemption(165)
+      const rentExemptionLamports = await connection.getMinimumBalanceForRentExemption(165)
       const feeLamports = Math.floor(rentExemptionLamports * (FEE_PERCENTAGE / 100))
 
       // Check user's balance before attempting transfer
-      const userBalance = await rpcConnection.getBalance(publicKey)
-      const estimatedTransactionFee = 5000 // Estimated transaction fee in lamports
+      const userBalance = await connection.getBalance(publicKey)
+      const estimatedTransactionFee = MIN_TRANSACTION_BALANCE_LAMPORTS
+
+      if (userBalance < estimatedTransactionFee) {
+        throw new Error(`This transaction needs at least ${estimatedTransactionFee / LAMPORTS_PER_SOL} SOL for network fees.`)
+      }
       
       console.log('🔍 NFT Burn Debug:', {
         rentExemptionLamports,
@@ -383,7 +378,7 @@ export function NFTBurn() {
       }
 
       // Get latest blockhash
-      const { blockhash, lastValidBlockHeight } = await rpcConnection.getLatestBlockhash()
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash()
       transaction.recentBlockhash = blockhash
       transaction.feePayer = publicKey
 
@@ -391,23 +386,26 @@ export function NFTBurn() {
       console.log('📝 NFTs being burned:', nftsToBurn.length)
       console.log('📝 NFT addresses:', nftsToBurn.map(nft => nft.address))
 
-      // Simulate transaction first to avoid warnings
-      try {
-        const simulation = await rpcConnection.simulateTransaction(transaction)
-        
-        if (simulation.value.err) {
-          throw new Error(`Transaction simulation failed: ${JSON.stringify(simulation.value.err)}`)
-        }
-        
-        console.log('✅ Transaction simulation successful')
-      } catch (simError) {
-        console.error('❌ Transaction simulation failed:', simError)
-        throw new Error('Transaction would fail. Please try again.')
-      }
+        // Sign first, then simulate and submit the exact signed payload.
+        const signedTx = await signTransaction(transaction)
+        const simulation = await connection.simulateTransaction(signedTx, {
+          commitment: 'confirmed',
+          sigVerify: true,
+        })
 
-      const signedTx = await signTransaction(transaction)
-      const signature = await rpcConnection.sendRawTransaction(signedTx.serialize())
-      await rpcConnection.confirmTransaction(signature)
+        if (simulation.value.err) {
+          const logs = simulation.value.logs?.slice(-4).join(' | ')
+          console.error('❌ Transaction simulation failed:', simulation.value.err, simulation.value.logs)
+          throw new Error(`Transaction simulation failed: ${JSON.stringify(simulation.value.err)}${logs ? ` (${logs})` : ''}`)
+        }
+
+        console.log('✅ Transaction simulation successful')
+
+      const signature = await connection.sendRawTransaction(signedTx.serialize(), {
+        skipPreflight: true,
+        maxRetries: 3,
+      })
+      await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight })
 
       console.log('✅ Transaction successful!')
       setSuccessTx(signature)

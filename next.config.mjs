@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url'
+
 let userConfig = undefined
 try {
   userConfig = await import('./v0-user-next.config')
@@ -7,6 +9,9 @@ try {
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  turbopack: {
+    root: fileURLToPath(new URL('.', import.meta.url)),
+  },
   transpilePackages: [
     '@solana/wallet-adapter-base',
     '@solana/wallet-adapter-react',
@@ -17,12 +22,6 @@ const nextConfig = {
     '@solana/web3.js',
     '@solana/spl-token',
   ],
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-  typescript: {
-    ignoreBuildErrors: true,
-  },
   images: {
     unoptimized: true,
   },

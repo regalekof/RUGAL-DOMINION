@@ -1,63 +1,23 @@
-export const RPC_CONFIG = {
-  // Primary RPC – QuickNode or any Solana RPC; set in .env.local (see .env.example)
-  RPC_HTTP: process.env.NEXT_PUBLIC_RPC_HTTP || '',
-  RPC_WSS: process.env.NEXT_PUBLIC_RPC_WSS || '',
+type SolanaNetwork = 'mainnet-beta' | 'devnet'
 
-  // Backup providers
-  HELIUS_API_KEY: process.env.NEXT_PUBLIC_HELIUS_API_KEY || '',
-  ANKR_API_KEY: process.env.NEXT_PUBLIC_ANKR_API_KEY || '',
-}
+const network = (process.env.NEXT_PUBLIC_SOLANA_NETWORK || 'mainnet-beta') as SolanaNetwork
+const heliusApiKey = process.env.NEXT_PUBLIC_HELIUS_API_KEY?.trim()
+const heliusHost = network === 'devnet' ? 'devnet.helius-rpc.com' : 'mainnet.helius-rpc.com'
+const heliusQuery = heliusApiKey ? `?api-key=${encodeURIComponent(heliusApiKey)}` : ''
 
-// Helper function to validate endpoint
-const getValidEndpoint = (endpoint: string) => {
-  if (!endpoint.includes('undefined') && !endpoint.includes('null') && endpoint.length > 0) {
-    return endpoint
-  }
-  return null
-}
-
+/** Helius uses the same path for HTTP and standard Solana WebSockets. */
 export const RPC_ENDPOINTS = {
-  // Primary (from env)
-  RPC_HTTP: getValidEndpoint(RPC_CONFIG.RPC_HTTP) || null,
-  RPC_WSS: getValidEndpoint(RPC_CONFIG.RPC_WSS) || null,
-  
-  // Backup endpoints
-  HELIUS: getValidEndpoint(`https://mainnet.helius-rpc.com/?api-key=${RPC_CONFIG.HELIUS_API_KEY}`),
-  ANKR: getValidEndpoint(`https://rpc.ankr.com/solana/${RPC_CONFIG.ANKR_API_KEY}`),
-  
-  // Last resort - public endpoint
-  PUBLIC: 'https://api.mainnet-beta.solana.com',
-}
+  http: heliusApiKey ? `https://${heliusHost}/${heliusQuery}` : null,
+  wss: heliusApiKey ? `wss://${heliusHost}/${heliusQuery}` : null,
+  public: network === 'devnet' ? 'https://api.devnet.solana.com' : 'https://api.mainnet-beta.solana.com',
+} as const
 
-// Get the best available endpoint with WebSocket support
 export const getBestEndpoint = () => {
-  // Primary RPC from env first
-  if (RPC_ENDPOINTS.RPC_HTTP && RPC_ENDPOINTS.RPC_WSS) {
-    return {
-      http: RPC_ENDPOINTS.RPC_HTTP,
-      wss: RPC_ENDPOINTS.RPC_WSS
+  if (!RPC_ENDPOINTS.http || !RPC_ENDPOINTS.wss) {
+    if (process.env.NODE_ENV === 'development') {
+      console.warn('Missing NEXT_PUBLIC_HELIUS_API_KEY; falling back to the public Solana RPC.')
     }
+    return { http: RPC_ENDPOINTS.public, wss: undefined }
   }
-  
-  // Try Helius next
-  if (RPC_ENDPOINTS.HELIUS) {
-    return {
-      http: RPC_ENDPOINTS.HELIUS,
-      wss: RPC_ENDPOINTS.HELIUS.replace('https://', 'wss://')
-    }
-  }
-  
-  // Try Ankr
-  if (RPC_ENDPOINTS.ANKR) {
-    return {
-      http: RPC_ENDPOINTS.ANKR,
-      wss: RPC_ENDPOINTS.ANKR.replace('https://', 'wss://')
-    }
-  }
-  
-  // Fallback to public endpoint
-  return {
-    http: RPC_ENDPOINTS.PUBLIC,
-    wss: RPC_ENDPOINTS.PUBLIC.replace('https://', 'wss://')
-  }
-} 
+  return { http: RPC_ENDPOINTS.http, wss: RPC_ENDPOINTS.wss }
+}
