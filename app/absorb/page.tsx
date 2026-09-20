@@ -1,327 +1,235 @@
 "use client"
 
-import Link from "next/link"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { ArrowLeft, Zap, Shield, Coins, ExternalLink, CheckCircle } from "lucide-react"
-import { SiteHeader } from "@/components/site-header"
-import { useWallet } from "@solana/wallet-adapter-react"
-import { useConnection } from "@solana/wallet-adapter-react"
-import { useState, useEffect } from "react"
-import { addLeaderboardPoints } from "@/components/leaderboard"
-import { PublicKey, Transaction } from "@solana/web3.js"
-import { TOKEN_PROGRAM_ID, getAccount } from "@solana/spl-token"
-import { createCloseAccountInstruction } from "@solana/spl-token"
-import { SystemProgram, LAMPORTS_PER_SOL } from "@solana/web3.js"
+import Link from 'next/link'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useConnection, useWallet } from '@solana/wallet-adapter-react'
+import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js'
+import { ArrowLeft, ArrowUpRight, Check, ChevronDown, ExternalLink, RefreshCw, Wallet, Zap } from 'lucide-react'
+import { SiteHeader } from '@/components/site-header'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { addLeaderboardPoints } from '@/components/leaderboard'
+import { MAX_RENT_ACCOUNTS, estimatedRentLabel, prepareRentRecovery, scanPumpRent, scanTokenRent, selectRentBatch, submitRentRecovery } from '@/lib/absorb'
+import type { RentAccount, RentKind, RecoveryKind, RentPreview } from '@/lib/absorb'
+import styles from './absorb.module.css'
 
-// Wallet adapter CSS is loaded in app/wallet-provider.tsx
+const sol = (lamports: number) => (lamports / LAMPORTS_PER_SOL).toFixed(9)
+const short = (address: string) => `${address.slice(0, 6)}…${address.slice(-6)}`
+const titles = { token: 'Accounts', pump: 'Pump Reward', both: 'Accounts + Pump Reward' }
+const errorText = (error: unknown) => (error instanceof Error ? error.message : 'Request failed. Please try again.').replace(/api-key=[^\s&"']+/gi, 'api-key=[redacted]')
+type Scan = { accounts: RentAccount[]; error: string | null }
+const emptyScan = (): Record<RentKind, Scan> => ({ token: { accounts: [], error: null }, pump: { accounts: [], error: null } })
+type Review = { kind: RecoveryKind; accounts: RentAccount[]; preview: RentPreview }
 
-// Fee wallet address
-const FEE_WALLET = new PublicKey('5YjWWvfD1r2YaHqtHbzBYvyjWbpLYT8ebVgyngCJXFVU')
-const FEE_PERCENTAGE = 2.0 // 2.0% fee
-const MIN_TRANSACTION_BALANCE_LAMPORTS = 10_000
-
-function AbsorbContent() {
+export default function AbsorbPage() {
   const { publicKey, signTransaction } = useWallet()
   const { connection } = useConnection()
-  const [emptyAccounts, setEmptyAccounts] = useState<{ address: string; balance: number }[]>([])
-  const [isLoading, setIsLoading] = useState(false)
+  const wallet = publicKey?.toBase58() ?? ''
+  const current = useRef({ wallet, connection, session: 0 })
+  if (current.current.wallet !== wallet || current.current.connection !== connection) {
+    current.current = { wallet, connection, session: current.current.session + 1 }
+  }
+  const session = current.current.session
+  const request = useRef(0)
+  const actionLock = useRef(false)
+  const [scan, setScan] = useState(emptyScan)
+  const [scanOwner, setScanOwner] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [selectedKinds, setSelectedKinds] = useState<Record<RentKind, boolean>>({ token: true, pump: false })
+  const [review, setReview] = useState<Review | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [successTx, setSuccessTx] = useState<string | null>(null)
+  const [receipt, setReceipt] = useState<{ signature: string; kind: RecoveryKind; confirmed: boolean } | null>(null)
+  const reviewHeading = useRef<HTMLHeadingElement>(null)
+  const cluster = process.env.NEXT_PUBLIC_SOLANA_NETWORK === 'devnet' ? '?cluster=devnet' : ''
 
-  const findEmptyAccounts = async () => {
-    if (!publicKey) return
-
-    try {
-      setIsLoading(true)
-      setError(null)
-
-      // Get all token accounts owned by the wallet
-      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
-        publicKey,
-        { programId: TOKEN_PROGRAM_ID }
-      )
-
-      // Filter for empty accounts
-      const empty = tokenAccounts.value
-        .filter(account => {
-          const parsedInfo = account.account.data.parsed.info
-          return parsedInfo.tokenAmount.uiAmount === 0
-        })
-        .map(account => ({
-          address: account.pubkey.toString(),
-          balance: account.account.data.parsed.info.tokenAmount.uiAmount
-        }))
-
-      setEmptyAccounts(empty)
-    } catch (err) {
-      // Silently fail - don't show error message to user
-      console.error(err)
-      setError(null)
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const closeAccounts = async () => {
-    if (!publicKey || emptyAccounts.length === 0) return
-
-    try {
-      setIsLoading(true)
-      setError(null)
-
-        // Calculate total rent exemption amount for all accounts
-        const rentExemptionLamports = await connection.getMinimumBalanceForRentExemption(165)
-        const totalRentLamports = rentExemptionLamports * emptyAccounts.length
-        const feeLamports = Math.floor(totalRentLamports * (FEE_PERCENTAGE / 100))
-
-        // Check user's balance before attempting transfer
-        const userBalance = await connection.getBalance(publicKey)
-        const estimatedTransactionFee = MIN_TRANSACTION_BALANCE_LAMPORTS
-
-        if (userBalance < estimatedTransactionFee) {
-          throw new Error(`This transaction needs at least ${estimatedTransactionFee / LAMPORTS_PER_SOL} SOL for network fees.`)
-        }
-        
-        console.log('🔍 Transaction Debug:', {
-          rentExemptionLamports,
-          totalRentLamports,
-          feeLamports,
-          userBalance,
-          rentExemptionSOL: rentExemptionLamports / LAMPORTS_PER_SOL,
-          totalRentSOL: totalRentLamports / LAMPORTS_PER_SOL,
-          feeSOL: feeLamports / LAMPORTS_PER_SOL,
-          userBalanceSOL: userBalance / LAMPORTS_PER_SOL,
-          accountCount: emptyAccounts.length
-        })
-
-        // Check if user has enough balance for fee + transaction fee
-        const hasEnoughBalance = userBalance >= feeLamports + estimatedTransactionFee;
-        if (!hasEnoughBalance) {
-          console.log('⚠️ User has insufficient balance for fee transfer, skipping fee');
-          console.log('💰 User balance:', userBalance / LAMPORTS_PER_SOL, 'SOL');
-          console.log('💰 Required for fee:', (feeLamports + estimatedTransactionFee) / LAMPORTS_PER_SOL, 'SOL');
-        }
-
-      // Create a single transaction
-      const transaction = new Transaction()
-      
-      // Add close account instructions for all empty accounts
-      for (const account of emptyAccounts) {
-        const accountPubkey = new PublicKey(account.address)
-          console.log('🔧 Creating close instruction for account:', account.address, 'balance:', account.balance)
-          
-          // Double-check that the account is actually empty
-          if (account.balance !== 0) {
-            console.log('⚠️ Skipping account - not empty:', account.address, 'balance:', account.balance)
-            continue
-          }
-          
-        const instruction = createCloseAccountInstruction(
-            accountPubkey,    // account to close
-            publicKey,       // destination (rent goes to user)
-            publicKey        // authority (user signs)
-        )
-        transaction.add(instruction)
-          console.log('✅ Added close instruction for:', account.address)
-        }
-
-        // Add fee transfer instruction only if user has enough balance
-        if (feeLamports > 0 && hasEnoughBalance) {
-          console.log('💰 Adding fee transfer:', {
-            from: publicKey.toString(),
-            to: FEE_WALLET.toString(),
-            lamports: feeLamports,
-            sol: feeLamports / LAMPORTS_PER_SOL
-          })
-          transaction.add(
-            SystemProgram.transfer({
-              fromPubkey: publicKey,
-              toPubkey: FEE_WALLET,
-              lamports: feeLamports
-            })
-          )
-        } else {
-          console.log('⚠️ Skipping fee transfer - insufficient balance or no fee needed')
-      }
-      
-      // Get latest blockhash
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash()
-      transaction.recentBlockhash = blockhash
-      transaction.feePayer = publicKey
-
-        console.log('📝 Transaction instructions count:', transaction.instructions.length)
-        console.log('📝 Empty accounts being processed:', emptyAccounts.length)
-        console.log('📝 Account addresses:', emptyAccounts.map(acc => acc.address))
-
-        if (!signTransaction) {
-          throw new Error('This wallet does not support transaction signing.')
-        }
-
-        // Sign first, then simulate and submit the exact signed payload.
-        const signedTransaction = await signTransaction(transaction)
-        const simulation = await connection.simulateTransaction(signedTransaction)
-
-        if (simulation.value.err) {
-          const logs = simulation.value.logs?.slice(-4).join(' | ')
-          console.error('❌ Transaction simulation failed:', simulation.value.err, simulation.value.logs)
-          throw new Error(`Transaction simulation failed: ${JSON.stringify(simulation.value.err)}${logs ? ` (${logs})` : ''}`)
-        }
-
-        console.log('✅ Transaction simulation successful')
-
-      const signature = await connection.sendRawTransaction(signedTransaction.serialize(), {
-        skipPreflight: true,
-        maxRetries: 3,
-      })
-
-        console.log('✅ Transaction signature:', signature)
-      
-      // Wait for confirmation
-      const confirmation = await connection.confirmTransaction({
-        signature,
-        blockhash,
-        lastValidBlockHeight
-      })
-
-        console.log('📊 Transaction confirmation:', confirmation)
-
-      if (confirmation.value.err) {
-          console.error('❌ Transaction failed:', confirmation.value.err)
-          setError('Transaction failed. Please try again.')
-          return
-        }
-
-        console.log('🎉 Transaction successful!')
-        setSuccessTx(signature)
-        setError(null)
-
-        // Add points to leaderboard
-        const referralCode = localStorage.getItem('referral_code')
-        for (let i = 0; i < emptyAccounts.length; i++) {
-          addLeaderboardPoints(publicKey.toString(), 'absorb', 0, referralCode || undefined)
-      }
-
-      // Refresh the list
-      await findEmptyAccounts()
-    } catch (err) {
-      setError("Failed to close accounts")
-      console.error(err)
-    } finally {
-      setIsLoading(false)
-    }
-  }
+  const isCurrent = useCallback(() => current.current.session === session, [session])
+  const refresh = useCallback(async () => {
+    const id = ++request.current
+    setReview(null)
+    setScan(emptyScan())
+    setScanOwner('')
+    if (!wallet) { setLoading(false); return }
+    setLoading(true)
+    const user = new PublicKey(wallet)
+    const results = await Promise.allSettled([scanTokenRent(connection, user), scanPumpRent(connection, user)])
+    if (!isCurrent() || id !== request.current) return
+    const resultScan = emptyScan()
+    ;(['token', 'pump'] as const).forEach((type, index) => {
+      const result = results[index]
+      resultScan[type] = result.status === 'fulfilled' ? { accounts: result.value, error: null } : { accounts: [], error: errorText(result.reason) }
+    })
+    setScan(resultScan)
+    setScanOwner(wallet)
+    setLoading(false)
+  }, [wallet, connection, isCurrent])
 
   useEffect(() => {
-    if (publicKey) {
-      findEmptyAccounts()
-    }
-  }, [publicKey])
+    setError(null)
+    setReceipt(null)
+    void refresh()
+    return () => { request.current++ }
+  }, [refresh])
+
+  useEffect(() => {
+    if (!review) return
+    reviewHeading.current?.focus({ preventScroll: true })
+    reviewHeading.current?.scrollIntoView({ block: 'center', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })
+  }, [review])
+
+  const prepare = async (type: RecoveryKind, accounts: RentAccount[]) => {
+    if (!wallet || actionLock.current) return
+    actionLock.current = true
+    setBusy(true)
+    setError(null)
+    setReceipt(null)
+    setReview(null)
+    try {
+      const preview = await prepareRentRecovery(connection, new PublicKey(wallet), type, accounts)
+      if (isCurrent()) setReview({ kind: type, accounts, preview })
+    } catch (err) { if (isCurrent()) setError(errorText(err)) }
+    finally { actionLock.current = false; setBusy(false) }
+  }
+
+  const recover = async () => {
+    if (!review || !wallet || !signTransaction || actionLock.current) return
+    actionLock.current = true
+    setBusy(true)
+    setError(null)
+    let sent = false
+    try {
+      // Revalidate the exact reviewed accounts and update the blockhash before signing.
+      const fresh = await prepareRentRecovery(connection, new PublicKey(wallet), review.kind, review.accounts)
+      if (!isCurrent()) return
+      if (fresh.networkFee !== review.preview.networkFee) {
+        setReview({ ...review, preview: fresh })
+        throw new Error('Network fee changed. Review the updated estimate and confirm again.')
+      }
+      const signed = await signTransaction(fresh.transaction)
+      if (!isCurrent()) return
+      const signature = await submitRentRecovery(connection, signed, fresh, isCurrent, signature => {
+        sent = true
+        if (isCurrent()) { setReceipt({ signature, kind: review.kind, confirmed: false }); setReview(null) }
+      })
+      if (isCurrent()) setReceipt({ signature, kind: review.kind, confirmed: true })
+      // Optional leaderboard failures must not change the confirmed on-chain result.
+      try {
+        const referral = localStorage.getItem('referral_code') || undefined
+        for (let i = 0; i < review.accounts.length; i++) {
+          await addLeaderboardPoints(wallet, 'absorb', 0, referral)
+        }
+      } catch { /* Optional leaderboard does not affect recovery. */ }
+      if (isCurrent()) await refresh()
+    } catch (err) {
+      if (isCurrent()) {
+        setError(`${errorText(err)}${sent ? ' Check the transaction below before retrying; confirmation may be delayed.' : ''}`)
+        if (sent) await refresh()
+      }
+    } finally { actionLock.current = false; setBusy(false) }
+  }
+
+  const selection = (['token', 'pump'] as const).filter(type => selectedKinds[type])
+  const recoveryKind: RecoveryKind = selection.length === 2 ? 'both' : selection[0] ?? 'token'
+  const selectedResults = selection.map(type => scanOwner === wallet ? scan[type] : { accounts: [], error: null })
+  const selectedAccounts = selectedResults.flatMap(result => result.accounts)
+  const eligible = selectedAccounts.filter(account => !account.blocked)
+  const batch = selectRentBatch(selectedAccounts)
+  const scanError = selectedResults.map((result, index) => result.error ? `${titles[selection[index]]}: ${result.error}` : '').filter(Boolean).join(' ')
+
+  const toggleKind = (type: RentKind) => {
+    if (actionLock.current) return
+    setSelectedKinds(previous => ({ ...previous, [type]: !previous[type] }))
+    setReview(null)
+    setError(null)
+  }
 
   return (
     <div className="relative min-h-screen">
       <SiteHeader />
-
-      <main className="container relative py-8 sm:py-12 px-4">
-        <div className="flex items-center mb-8">
-          <Link href="/" className="flex items-center text-red-400/80 hover:text-primary transition-colors">
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back to Arena
-          </Link>
-        </div>
-
-        {/* Success Box */}
-        {successTx && (
-          <div className="mx-auto max-w-[900px] mb-8">
-            <Card className="card-gothic pixel-border eclipse-bg border-green-500/30">
-              <CardContent className="p-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <CheckCircle className="h-6 w-6 text-green-400" />
-                  <h3 className="text-xl font-bold text-green-400">Transaction Successful!</h3>
-                </div>
-                <p className="text-gray-300 mb-4">
-                  Your rent absorption transaction has been completed successfully.
-                </p>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm text-gray-400">Transaction ID:</span>
-                  <code className="text-sm bg-gray-800 px-2 py-1 rounded text-green-300 font-mono">
-                    {successTx.slice(0, 8)}...{successTx.slice(-8)}
-                  </code>
-                  <a
-                    href={`https://solscan.io/tx/${successTx}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-1 text-blue-400 hover:text-blue-300 transition-colors"
-                  >
-                    <ExternalLink className="h-4 w-4" />
-                    View on Solscan
-                  </a>
-                </div>
-                <Button
-                  onClick={() => setSuccessTx(null)}
-                  variant="outline"
-                  size="sm"
-                  className="mt-4 border-gray-600 text-gray-300 hover:bg-gray-800"
-                >
-                  Close
-                </Button>
-              </CardContent>
-            </Card>
+      <main className="container relative px-4 py-8 sm:py-12">
+        <Link href="/" className="mb-8 inline-flex items-center text-red-400/80 hover:text-primary"><ArrowLeft className="mr-2 h-4 w-4" />Back to Arena</Link>
+        <div className={`mx-auto max-w-[900px] space-y-6 ${styles.absorb}`}>
+          <div className="text-center">
+            <h1 className="power-text text-4xl font-bold tracking-tighter sm:text-5xl">Omega Absorption</h1>
+            <p className="mt-4 text-red-200/70">Unused accounts. Reclaimed power.</p>
           </div>
-        )}
-
-        <div className="mx-auto max-w-[900px]">
-          <div className="text-center mb-12">
-            <h1 className="text-4xl font-bold tracking-tighter sm:text-5xl md:text-6xl power-text">Omega Absorption</h1>
-            <p className="mt-4 text-red-400/80 md:text-xl">
-              Absorb the power of dormant accounts to strengthen your dominion
-            </p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">{wallet ? `Wallet: ${short(wallet)}` : 'Connect your wallet to scan for recoverable rent.'}</p>
+            <Button variant="outline" onClick={() => { setError(null); void refresh() }} disabled={!wallet || loading || busy}><RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />{loading ? 'Scanning…' : 'Refresh'}</Button>
           </div>
-
-          {/* Account Closing Card */}
-          <Card className="card-gothic pixel-border eclipse-bg mb-12">
-            <CardHeader>
-              <CardTitle className="flex items-center justify-center gap-2">
-                <Zap className="h-5 w-5 text-primary" />
-                <span>Absorb Tokens</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-6">
-                {/* Account Summary */}
-                <div className="flex flex-col items-center justify-center p-8 border border-red-900/30 rounded-md bg-purple-900/10">
-                  <div className="w-20 h-20 rounded-full bg-primary/20 flex items-center justify-center mb-4">
-                    <Coins className="h-10 w-10 text-primary" />
-                </div>
-                  <div className="text-center">
-                    <p className="text-2xl font-bold mb-2">{emptyAccounts.length}</p>
-                    </div>
-                </div>
-
-
-                {error && (
-                  <div className="p-4 border border-red-500/30 rounded bg-red-500/10">
-                    <p className="text-sm text-red-400">{error}</p>
-                  </div>
-                )}
-
-                <Button 
-                  className="eclipse-glow rugal-gradient w-full py-4 sm:py-6 text-sm sm:text-base"
-                  onClick={closeAccounts}
-                  disabled={!publicKey || emptyAccounts.length === 0 || isLoading}
-                >
-                  <Zap className="mr-2 h-5 w-5" />
-                  {isLoading ? "Processing..." : "Absorb"}
-                </Button>
-              </div>
+          {error && <div role="alert" className="rounded border border-red-500/40 bg-red-500/10 p-4 text-sm break-words">{error}</div>}
+          {receipt && (
+            <div role="status" className="rounded border border-green-500/40 bg-green-500/10 p-4">
+              <p>{titles[receipt.kind]} — {receipt.confirmed ? 'recovery confirmed.' : 'submitted; confirmation not yet verified.'}</p>
+              <a className="mt-2 inline-flex items-center gap-2 text-sm underline" href={`https://solscan.io/tx/${receipt.signature}${cluster}`} target="_blank" rel="noopener noreferrer">{short(receipt.signature)}<ExternalLink className="h-4 w-4" /></a>
+            </div>
+          )}
+          <div className="space-y-5">
+            <p className="text-center text-sm text-muted-foreground">Select one or both · Recover together in one transaction</p>
+            <div role="group" aria-label="Choose rent recovery types" className={styles.choices}>
+              {(['token', 'pump'] as const).map(type => {
+                const result = scanOwner === wallet ? scan[type] : { accounts: [], error: null }
+                const eligible = result.accounts.filter(account => !account.blocked)
+                const ready = !!wallet && scanOwner === wallet && !loading && !result.error
+                return (
+                  <button key={type} type="button" aria-label={titles[type]} aria-pressed={selectedKinds[type]} aria-controls="rent-recovery-summary" onClick={() => toggleKind(type)} disabled={busy} className={`${styles.choice} ${type === 'pump' ? styles.pump : ''}`}>
+                    <span className={styles.orb} aria-hidden="true">
+                      {type === 'token' ? (
+                        <svg viewBox="0 0 100 100" className={styles.accountIcon} fill="none">
+                          <path d="M27 27h53l-9 12H18l9-12Zm-9 20h53l9 12H27l-9-12Zm9 20h53l-9 12H18l9-12Z" fill="currentColor" />
+                          <path d="M12 64v18a6 6 0 0 0 6 6h62a6 6 0 0 0 6-6V64" stroke="currentColor" strokeWidth="5" />
+                        </svg>
+                      ) : <Wallet className={styles.walletIcon} strokeWidth={1.5} />}
+                      <ArrowUpRight className={styles.orbArrow} />
+                      <span className={styles.selectedMark}><Check size={14} strokeWidth={3} /></span>
+                    </span>
+                    <span className={styles.choiceTitle}>{titles[type]}</span>
+                    <span className={styles.choiceSubtitle}>{type === 'token' ? 'SPL & Token-2022' : 'Pump account rent'}</span>
+                    <span className={styles.availableLabel}>{result.error ? 'Scan unavailable' : loading ? 'Scanning…' : 'Estimated rent'}</span>
+                    <span className={styles.amount}>{ready ? estimatedRentLabel(eligible.length) : '—'} <span>SOL</span></span>
+                    <span className={styles.count}>{ready ? `${eligible.length} eligible account${eligible.length === 1 ? '' : 's'}` : result.error ? 'Refresh to retry' : wallet ? 'Checking eligibility' : 'Connect to discover'}</span>
+                    <span className={styles.selectionLabel}>{selectedKinds[type] ? 'Selected' : 'Select'}</span>
+                  </button>
+                )
+              })}
+            </div>
+                  <Card id="rent-recovery-summary" className={styles.detailsCard}>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2"><Zap className="h-5 w-5 text-primary" />{selection.length ? titles[recoveryKind] : 'Choose your accounts'}</CardTitle>
+                      <CardDescription>{!selection.length ? 'Select Accounts, Pump Reward, or both above.' : 'Recover your selected accounts together with one wallet approval.'}</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-5">
+                      {scanError ? <p role="alert" className="text-sm text-red-400">Scan failed: {scanError} Refresh or deselect the unavailable category to continue.</p> : (
+                        <>
+                          <p role="status" className="text-sm text-muted-foreground">{!selection.length ? 'Nothing selected.' : !wallet ? 'Connect your wallet above to get started.' : loading ? 'Finding eligible accounts…' : `${eligible.length} account${eligible.length === 1 ? '' : 's'} ready for recovery`}</p>
+                          {wallet && selection.length > 0 && !loading && selectedAccounts.length === 0 && <p className="text-sm text-muted-foreground">No accounts found for your selection.</p>}
+                          {selectedAccounts.length > 0 && <details className={styles.accountDetails}>
+                            <summary>View accounts ({selectedAccounts.length}){selectedAccounts.length > eligible.length && <span> · {selectedAccounts.length - eligible.length} excluded</span>}<ChevronDown size={16} /></summary>
+                            <ul className="mt-3 max-h-80 space-y-3 overflow-auto">
+                            {selectedAccounts.map(account => <li key={account.address} className="rounded border border-red-900/30 p-3 text-sm">
+                              <div className="flex flex-wrap justify-between gap-2"><span>{account.label} · <a className="underline" href={`https://solscan.io/account/${account.address}${cluster}`} target="_blank" rel="noopener noreferrer">{short(account.address)}</a></span><span>{sol(account.lamports)} SOL{account.blocked ? ' held' : ' recoverable'}</span></div>
+                              {account.blocked && <p className="mt-2 text-amber-300">Excluded: {account.blocked}</p>}
+                            </li>)}
+                            </ul>
+                          </details>}
+                          {eligible.length > MAX_RENT_ACCOUNTS && <p className="text-sm text-muted-foreground">This transaction includes {batch.length} of {eligible.length} eligible accounts. Remaining accounts stay available for another batch.</p>}
+                        </>
+                      )}
+                      <Button className={styles.recoverButton} disabled={!wallet || !signTransaction || loading || busy || !!scanError || !batch.length || !selection.length} onClick={() => void prepare(recoveryKind, batch)}>{busy ? <><RefreshCw className="mr-2 h-4 w-4 animate-spin" />Processing…</> : <>Review & recover in 1 transaction<ArrowUpRight className="ml-2 h-4 w-4" /></>}</Button>
+                      <p className="text-center text-xs text-muted-foreground">One transaction · One wallet approval · No token burns</p>
+                    </CardContent>
+                  </Card>
+          </div>
+          {review && <Card className={styles.detailsCard}>
+            <CardHeader><h2 ref={reviewHeading} tabIndex={-1} className="text-xl font-semibold outline-none">Review {titles[review.kind]} rent recovery</h2><CardDescription>{review.accounts.length} accounts · One transaction. Actual amounts below replace the rounded card estimates.</CardDescription></CardHeader>
+            <CardContent className="space-y-4 text-sm">
+              <ul className="space-y-1">{review.accounts.map(account => <li key={account.address} className="break-all font-mono">{account.address}</li>)}</ul>
+              <p>Actual rent returned: {sol(review.preview.gross)} SOL<br />Estimated network fee: {sol(review.preview.networkFee)} SOL<br /><strong>Estimated net increase: {sol(review.preview.net - review.preview.networkFee)} SOL</strong></p>
+              <div className="flex flex-wrap gap-3"><Button onClick={() => void recover()} disabled={busy}>{busy ? 'Processing…' : 'Approve in wallet'}</Button><Button variant="outline" onClick={() => setReview(null)} disabled={busy}>Cancel</Button></div>
             </CardContent>
-          </Card>
+          </Card>}
         </div>
       </main>
     </div>
   )
-}
-
-export default function AbsorbPage() {
-  return <AbsorbContent />
 }

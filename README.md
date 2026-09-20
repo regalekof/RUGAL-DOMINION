@@ -26,7 +26,22 @@ Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` to enable the
 ## Checks
 
 - `pnpm exec tsc --noEmit` checks TypeScript.
+- `pnpm test:absorb` runs offline rent-recovery tests (Node 22.6+).
 - `pnpm build` builds production assets and validates types.
 - `pnpm start` serves the production build.
 
 The live RPC health check is read-only. Burning tokens and closing accounts require wallet approval and have not been exercised by the build checks.
+
+## Absorb: rent recovery
+
+The **Accounts** and **Pump Reward** cards can be selected individually or together. Their simplified display is an explicitly labelled estimate of `0.0015 SOL × eligible account count` for either type. Transaction calculations always use actual account balances, not the display estimate.
+
+Selected categories are recovered in one transaction per batch, with one wallet signature and **no Absorb service fee**. Eligible Pump accounts are prioritised so both categories fit together in a batch of up to 10 accounts. Remaining accounts require another explicitly reviewed batch. The final review shows actual recovered SOL and estimated network fees.
+
+- **Token-account rent** scans SPL Token and Token-2022 separately and closes only eligible empty accounts. Native/wrapped SOL, nonzero balances, foreign close authorities, withheld fees, and unreviewed extensions are excluded. The token-burning pages are unchanged.
+- **Pump-account rent** derives the connected wallet's Pump.fun and PumpSwap `user_volume_accumulator` PDAs. It uses each owning program's `close_user_volume_accumulator`, not SPL closure. No cashback/reward claim instructions are implemented.
+- Pump recovery is deliberately conservative: only the verified 137-byte layouts are supported; unknown fields, pending/unsettled reward state, additional SOL, or funded/extended reward vaults block recovery. Resolve these on Pump first. Future trades may recreate an account and require another rent deposit.
+- Every batch (up to 10 accounts) has a separate review with actual account lamports, estimated network fees, and the net return. No service-fee transfer is added. Only the network fee must be funded upfront. Other pages' fee policies are unchanged.
+- The exact reviewed accounts are rechecked before signing. Transactions are simulated using the versioned API (including legacy-message transactions), sent with preflight enabled, and only marked successful after error-free confirmation. A submitted signature remains visible if confirmation is uncertain.
+
+Program layouts/instructions were checked against the [official Pump IDLs](https://github.com/pump-fun/pump-public-docs/tree/main/idl) on 2026-09-21. Layout changes fail closed and require review. Offline tests use synthetic accounts and mocked RPC, not signed mainnet operations.

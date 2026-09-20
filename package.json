@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:absorb": "node --experimental-strip-types --test tests/absorb.test.mjs"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.31.1",
