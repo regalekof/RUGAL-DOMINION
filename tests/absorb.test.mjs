@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { ComputeBudgetProgram, ComputeBudgetInstruction, Keypair, PublicKey, SystemProgram, SystemInstruction, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, AccountLayout, AccountState } from '@solana/spl-token'
-import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, LIGHTHOUSE_PROGRAM_ID, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, rentTotals, estimatedRentLabel, selectRentBatch, assertUnchanged, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery, recoveryMessageDifference, retryRecoveryRead } from '../lib/absorb.ts'
+import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, RENT_BATCH_BYTE_TARGET, LIGHTHOUSE_PROGRAM_ID, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, rentTotals, estimatedRentLabel, createRentReview, selectRentBatch, assertUnchanged, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery, recoveryMessageDifference, retryRecoveryRead } from '../lib/absorb.ts'
 
 const signer = Keypair.fromSeed(Uint8Array.from({ length: 32 }, (_, index) => index + 1))
 const user = signer.publicKey
@@ -64,11 +64,11 @@ test('nonempty, native SOL and foreign-owner accounts never enter token recovery
   assert.equal(tokenRentAccount(address, { ...tokenInfo(), owner: SystemProgram.programId }, user), null)
 })
 
-test('foreign close authority, withheld fees and unknown extensions are excluded', () => {
+test('foreign close authority and withheld fees are blocked without blanket-excluding extensions', () => {
   assert.match(tokenRentAccount(address, tokenInfo(TOKEN_PROGRAM_ID, { closeAuthorityOption: 1, closeAuthority: other }), user).blocked, /authority/)
   const feeExtension = Buffer.alloc(12); feeExtension.writeUInt16LE(2); feeExtension.writeUInt16LE(8, 2); feeExtension.writeBigUInt64LE(1n, 4)
   assert.match(tokenRentAccount(address, tokenInfo(TOKEN_2022_PROGRAM_ID, {}, feeExtension), user).blocked, /Withheld/)
-  assert.match(tokenRentAccount(address, tokenInfo(TOKEN_2022_PROGRAM_ID, {}, Buffer.from([8, 0, 1, 0, 1])), user).blocked, /extension/)
+  assert.equal(tokenRentAccount(address, tokenInfo(TOKEN_2022_PROGRAM_ID, {}, Buffer.from([8, 0, 1, 0, 1])), user).blocked, undefined)
 })
 
 test('Pump closure matches official account order and contains no claim instruction', () => {
@@ -330,7 +330,7 @@ test('account changes during wallet approval are rejected before submission', as
 test('a ten-account mixed-token batch fits the Solana packet limit', () => {
   const tx = new Transaction({ feePayer: user, recentBlockhash: other.toBase58() })
   tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 0 }))
-  for (let index = 0; index < MAX_RENT_ACCOUNTS; index++) {
+  for (let index = 0; index < 10; index++) {
     const accountAddress = Keypair.fromSeed(new Uint8Array(32).fill(index + 30)).publicKey
     const row = tokenRentAccount(accountAddress, tokenInfo(index % 2 ? TOKEN_PROGRAM_ID : TOKEN_2022_PROGRAM_ID), user)
     tx.add(closeRentInstruction('token', row, user))
@@ -376,7 +376,7 @@ function mixedConnection(count = 2) {
 
 test('both categories combine into ONE transaction with one aggregated service transfer', async () => {
   const rpc = mixedConnection()
-  const rows = selectRentBatch([...(await scanTokenRent(rpc, user)), ...(await scanPumpRent(rpc, user))])
+  const rows = selectRentBatch([...(await scanTokenRent(rpc, user)), ...(await scanPumpRent(rpc, user))], user)
   const preview = await prepareRentRecovery(rpc, user, 'both', rows)
   assert.equal(rows.length, 4)
   assert.equal(preview.transaction.instructions.length, 6)
@@ -394,19 +394,22 @@ test('both categories combine into ONE transaction with one aggregated service t
 })
 
 test('maximum combined batch includes both Pump accounts and fits one packet', async () => {
-  const rpc = mixedConnection(20)
+  const rpc = mixedConnection(100)
   const pump = await scanPumpRent(rpc, user)
-  const rows = selectRentBatch([...(await scanTokenRent(rpc, user)), ...pump])
-  assert.equal(rows.length, MAX_RENT_ACCOUNTS)
+  const rows = selectRentBatch([...(await scanTokenRent(rpc, user)), ...pump], user)
+  assert.equal(MAX_RENT_ACCOUNTS, 100)
+  assert.ok(rows.length > 10 && rows.length < MAX_RENT_ACCOUNTS)
   assert.deepEqual(rows.slice(0, 2).map(row => row.address), pump.map(row => row.address))
   const preview = await prepareRentRecovery(rpc, user, 'both', rows)
+  assert.ok(preview.transaction.serialize({ requireAllSignatures: false }).length <= RENT_BATCH_BYTE_TARGET)
+  assert.equal(preview.transaction.instructions.length, rows.length + 2)
+  preview.transaction.add(lighthouseGuard(), lighthouseGuard(new PublicKey(rows[0].address)))
   assert.ok(preview.transaction.serialize({ requireAllSignatures: false }).length <= 1232)
-  assert.equal(preview.transaction.instructions.length, MAX_RENT_ACCOUNTS + 2)
 })
 
 test('combined recovery never broadcasts when a Pump account changes after signing', async () => {
   const rpc = mixedConnection()
-  const rows = selectRentBatch([...(await scanTokenRent(rpc, user)), ...(await scanPumpRent(rpc, user))])
+  const rows = selectRentBatch([...(await scanTokenRent(rpc, user)), ...(await scanPumpRent(rpc, user))], user)
   const preview = await prepareRentRecovery(rpc, user, 'both', rows)
   preview.transaction.sign(signer)
   rpc.getMultipleAccountsInfo = async () => [null, null]
@@ -580,5 +583,62 @@ test('wallet change during a blockhash-lag retry never broadcasts', async () => 
     return { value: { err: ++attempts === 1 ? 'BlockhashNotFound' : null } }
   }
   await assert.rejects(submitRentRecovery(rpc, preview.transaction, preview, () => current, () => {}), /Wallet or network changed/)
+  assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
+})
+
+test('review is a synchronous copied snapshot; preparation and simulation run only on approval', async () => {
+  const rpc = mockConnection()
+  let reads = 0
+  rpc.getMultipleAccountsInfo = async () => { reads++; return [tokenInfo()] }
+  const accounts = [tokenRow()]
+  const review = createRentReview('token', accounts)
+  assert.equal(review instanceof Promise, false)
+  assert.notEqual(review.accounts, accounts)
+  assert.notEqual(review.accounts[0], accounts[0])
+  assert.equal(reads, 0); assert.equal(rpc.calls.length, 0)
+  const preview = await prepareRentRecovery(rpc, user, review.kind, review.accounts)
+  assert.equal(reads, 1)
+  assert.equal(rpc.calls.filter(([type, config]) => type === 'simulate' && !config.sigVerify).length, 1)
+  preview.transaction.sign(signer)
+  await submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {})
+  assert.equal(reads, 2, 'post-signature state validation remains')
+  assert.equal(rpc.calls.filter(([type, config]) => type === 'simulate' && config.sigVerify).length, 1)
+})
+
+test('100-account review cap is distinct from transaction byte limits', async () => {
+  const rpc = mixedConnection(101)
+  const accounts = await scanTokenRent(rpc, user)
+  assert.equal(createRentReview('token', accounts.slice(0, 100)).accounts.length, 100)
+  assert.throws(() => createRentReview('token', accounts), /selection/)
+  assert.throws(() => createRentReview('pump', accounts.slice(0, 1)), /selection/)
+  await assert.rejects(prepareRentRecovery(rpc, user, 'token', accounts.slice(0, 100)), /too large for one transaction/)
+})
+
+test('size-based batches cover 100 accounts without duplicates and exceed the old ten-account limit', async () => {
+  const rpc = mixedConnection(100)
+  let remaining = await scanTokenRent(rpc, user)
+  const covered = new Set()
+  while (remaining.length) {
+    const batch = selectRentBatch([...remaining, remaining[0]], user)
+    assert.ok(batch.length > 0 && batch.length <= 100)
+    if (!covered.size) assert.ok(batch.length > 10)
+    const preview = await prepareRentRecovery(rpc, user, 'token', batch)
+    assert.ok(preview.transaction.serialize({ requireAllSignatures: false }).length <= RENT_BATCH_BYTE_TARGET)
+    for (const row of batch) { assert.equal(covered.has(row.address), false); covered.add(row.address) }
+    remaining = remaining.filter(row => !covered.has(row.address))
+  }
+  assert.equal(covered.size, 100)
+})
+
+test('extension accounts can reach simulation, but program rejection still prevents signing or sending', async () => {
+  const rpc = mockConnection()
+  const info = tokenInfo(TOKEN_2022_PROGRAM_ID, {}, Buffer.from([8, 0, 1, 0, 1]))
+  const row = tokenRentAccount(address, info, user)
+  assert.equal(row.blocked, undefined)
+  rpc.getMultipleAccountsInfo = async () => [info]
+  let simulations = 0
+  rpc.simulateTransaction = async () => { simulations++; return { value: { err: { InstructionError: [1, 'Custom'] } } } }
+  await assert.rejects(prepareRentRecovery(rpc, user, 'token', [row]), /simulation failed/)
+  assert.equal(simulations, 1)
   assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
 })

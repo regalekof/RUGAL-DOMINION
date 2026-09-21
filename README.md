@@ -21,7 +21,7 @@ Choose either card or select both:
 - **Accounts** — recover rent from eligible empty SPL Token and Token-2022 accounts.
 - **Pump Reward** — recover rent from eligible Pump.fun and PumpSwap user volume accounts. Despite its name, this is account-rent recovery, not a cashback or trading-reward claim.
 
-Both categories can be recovered together in **one transaction per batch**, with one wallet signature. Each batch contains up to **10 accounts**. Eligible Pump accounts are prioritised when both categories are selected; additional token accounts remain available for another batch.
+Both categories can be recovered together in **one transaction per batch**, with one wallet signature. The account cap is **100**, but batches are sized to fit Solana's transaction packet limit with room reserved for wallet safety assertions; the actual account count is usually lower. Eligible Pump accounts are prioritised when both categories are selected; remaining token accounts stay available for another batch.
 
 The cards display a simplified estimate of `0.0015 SOL × eligible account count`. This is a display estimate only. Transaction calculations use each account's actual on-chain balance.
 
@@ -45,10 +45,10 @@ The cards display a simplified estimate of `0.0015 SOL × eligible account count
 ### Absorb Protection
 
 - Only eligible empty token accounts enter rent recovery; nonzero token balances and native/wrapped SOL accounts are excluded.
-- Account ownership, close authority, and supported Token-2022 extensions are checked. Unsupported or unresolved extension state is excluded.
+- Account ownership, close authority, and withheld token balances are checked. Empty token accounts are no longer excluded just because they have extensions; the owning Token program's extension-specific close rules are checked through transaction simulation. Pump reward-vault extension checks remain conservative.
 - Pump accounts are derived for the connected wallet and validated against the supported program owners, account discriminator, and 137-byte layout.
 - Pending rewards, unsettled trading volume, unexpected account fields, extra SOL, and funded or unreviewed reward vaults block Pump rent recovery.
-- The exact reviewed accounts are rechecked before signing and again after wallet approval.
+- Opening the review uses the scanned account snapshot without extra RPC calls or simulation. The exact reviewed accounts are checked once before signing and again after wallet approval; an unsigned blockhash-expiry retry may repeat preparation.
 - Absorb simulates transactions, preserves the signed payload, and submits with preflight enabled. Success is shown only after error-free confirmation.
 - Wallet or connection changes prevent stale recovery submissions. A submitted transaction link remains available when confirmation is uncertain.
 

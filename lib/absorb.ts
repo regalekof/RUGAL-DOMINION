@@ -1,12 +1,15 @@
 import { Buffer } from 'buffer'
 import { ComputeBudgetProgram, Message, PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
 import type { AccountInfo, Connection } from '@solana/web3.js'
-import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ExtensionType, getExtensionTypes, getTransferFeeAmount, unpackAccount, createCloseAccountInstruction } from '@solana/spl-token'
+import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getExtensionTypes, getTransferFeeAmount, unpackAccount, createCloseAccountInstruction } from '@solana/spl-token'
 
 export type RentKind = 'token' | 'pump'
 export type RecoveryKind = RentKind | 'both'
 export type RentAccount = { address: string; program: string; label: string; lamports: number; blocked?: string }
-export const MAX_RENT_ACCOUNTS = 10
+export const MAX_RENT_ACCOUNTS = 100
+export const RENT_PACKET_LIMIT = 1232
+// Leave room for wallet-added assertions. Final serialized size is still checked.
+export const RENT_BATCH_BYTE_TARGET = RENT_PACKET_LIMIT - 192
 // Phantom's documented transaction guards. Only the assertion-only variants
 // below are accepted, never MemoryWrite (0), MemoryClose (1), or unknown opcodes.
 // https://docs.phantom.com/developer-powertools/lighthouse
@@ -59,8 +62,8 @@ export function tokenRentAccount(address: PublicKey, info: AccountInfo<Buffer>, 
   if (!account.isInitialized || account.isNative || account.amount !== BigInt(0) || !account.owner.equals(user)) return null
   let blocked: string | undefined
   if (!(account.closeAuthority ?? account.owner).equals(user)) blocked = 'Another wallet has close authority.'
-  const extensions = getExtensionTypes(account.tlvData)
-  if (extensions.some(type => ![ExtensionType.ImmutableOwner, ExtensionType.TransferFeeAmount].includes(type))) blocked = 'This token extension needs additional checks; account excluded.'
+  // Do not blanket-exclude extensions. The owning Token program's close checks
+  // run during unsigned and signed simulation. Known withheld funds still block.
   if ((getTransferFeeAmount(account)?.withheldAmount ?? BigInt(0)) !== BigInt(0)) blocked = 'Withheld token fees must be handled before closing.'
   return { address: address.toBase58(), program: info.owner.toBase58(), label: info.owner.equals(TOKEN_2022_PROGRAM_ID) ? 'Token-2022' : 'SPL Token', lamports: info.lamports, blocked }
 }
@@ -122,19 +125,32 @@ export function accountRentKind(account: RentAccount): RentKind {
   throw new Error('Unsupported recovery program.')
 }
 
-export function selectRentBatch(accounts: RentAccount[]) {
+export function selectRentBatch(accounts: RentAccount[], user: PublicKey) {
   // Put the at-most-two Pump PDAs first so a large token list cannot push them
   // into a later batch when the user selected both categories.
-  return accounts.filter(account => !account.blocked)
+  const seen = new Set<string>()
+  const candidates = accounts.filter(account => {
+    if (account.blocked || seen.has(account.address)) return false
+    seen.add(account.address)
+    return true
+  })
     .sort((a, b) => Number(accountRentKind(a) === 'token') - Number(accountRentKind(b) === 'token'))
     .slice(0, MAX_RENT_ACCOUNTS)
+  const batch: RentAccount[] = []
+  for (const account of candidates) {
+    const trial = [...batch, account]
+    const transaction = buildRentTransaction(user, trial, { blockhash: PublicKey.default.toBase58(), lastValidBlockHeight: 0 })
+    if (transaction.serialize({ requireAllSignatures: false, verifySignatures: false }).length > RENT_BATCH_BYTE_TARGET) break
+    batch.push(account)
+  }
+  return batch
 }
 
 async function scanRecoveryRent(connection: Connection, user: PublicKey, kind: RecoveryKind, selected: RentAccount[]) {
   assertUnchanged(selected, selected)
   if (selected.some(account => kind !== 'both' && accountRentKind(account) !== kind)) throw new Error('Invalid recovery selection.')
   const tokenRows = selected.filter(account => accountRentKind(account) === 'token')
-  // Fetch the at-most-ten selected accounts in one request. Never cache this:
+  // Fetch the at-most-100 selected accounts in one request. Never cache this:
   // all raw ownership, balance, close-authority and extension checks still run.
   const readTokens = async () => {
     if (!tokenRows.length) return []
@@ -182,6 +198,25 @@ export function assertUnchanged(selected: RentAccount[], fresh: RentAccount[]) {
   }
 }
 
+export function createRentReview(kind: RecoveryKind, accounts: RentAccount[]) {
+  // UI-only snapshot: no RPC reads, blockhash fetching or simulation here.
+  assertUnchanged(accounts, accounts)
+  if (accounts.some(account => kind !== 'both' && accountRentKind(account) !== kind)) throw new Error('Invalid recovery selection.')
+  return { kind, accounts: accounts.map(account => ({ ...account })) }
+}
+
+function buildRentTransaction(user: PublicKey, selected: RentAccount[], latest: { blockhash: string; lastValidBlockHeight: number }) {
+  const transaction = new Transaction({ feePayer: user, ...latest })
+  // Declare priority policy before signing so Phantom does not inject it later.
+  // https://docs.phantom.com/developer-powertools/solana-priority-fees
+  transaction.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 0 }))
+  selected.forEach(account => transaction.add(closeRentInstruction(accountRentKind(account), account, user)))
+  // Recover rent first; the transfer stays atomic with the account closures.
+  const { fee } = rentTotals(selected)
+  if (fee > 0) transaction.add(SystemProgram.transfer({ fromPubkey: user, toPubkey: FEE_WALLET, lamports: fee }))
+  return transaction
+}
+
 class RecoveryBlockhashError extends Error {
   constructor() {
     super('The RPC could not validate the transaction blockhash (it may have expired or the RPC may be behind). Nothing was sent. Approve again to rebuild with a fresh blockhash and sign again.')
@@ -223,18 +258,13 @@ async function prepareRentRecoveryOnce(connection: Connection, user: PublicKey, 
   const blockhashResponse = await retryRecoveryRead(() => connection.getLatestBlockhashAndContext('confirmed'))
   const latest = blockhashResponse.value
   const minContextSlot = blockhashResponse.context.slot
-  const transaction = new Transaction({ feePayer: user, ...latest })
-  // Declare the price before estimating, simulating and asking for a signature.
-  // Phantom otherwise injects priority instructions at signing, invalidating our
-  // exact-message check. Zero preserves the existing base-fee-only policy; leave
-  // the default compute-unit limit intact. Recovery instructions remain protected.
-  // https://docs.phantom.com/developer-powertools/solana-priority-fees
-  transaction.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 0 }))
-  selected.forEach(account => transaction.add(closeRentInstruction(accountRentKind(account), account, user)))
-  // Recover rent first so the service fee is funded from the returned SOL.
-  // This transfer is atomic with all closures; it is not sent separately.
-  if (totals.fee > 0) transaction.add(SystemProgram.transfer({ fromPubkey: user, toPubkey: FEE_WALLET, lamports: totals.fee }))
-  if (transaction.serialize({ requireAllSignatures: false, verifySignatures: false }).length > 1232) throw new Error('This selection is too large for one transaction. Select fewer accounts.')
+  const transaction = buildRentTransaction(user, selected, latest)
+  try {
+    if (transaction.serialize({ requireAllSignatures: false, verifySignatures: false }).length > RENT_PACKET_LIMIT) throw new Error('Transaction too large')
+  } catch (error) {
+    if (error instanceof Error && /too large|encoding overruns/i.test(error.message)) throw new Error('This selection is too large for one transaction. Refresh to use size-based batches.')
+    throw error
+  }
   const message = transaction.compileMessage()
   const [feeEstimate, balance] = await Promise.all([
     retryRecoveryRead(() => connection.getFeeForMessage(message, 'confirmed')),

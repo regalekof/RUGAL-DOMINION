@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import Image from 'next/image'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js'
 import { ArrowLeft, ArrowUpRight, Check, ExternalLink, RefreshCw, Zap } from 'lucide-react'
@@ -10,8 +10,8 @@ import { SiteHeader } from '@/components/site-header'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { addLeaderboardPoints } from '@/components/leaderboard'
-import { MAX_RENT_ACCOUNTS, FEE_WALLET, rentTotals, estimatedRentLabel, prepareRentRecovery, scanPumpRent, scanTokenRent, selectRentBatch, submitRentRecovery } from '@/lib/absorb'
-import type { RentAccount, RentKind, RecoveryKind, RentPreview } from '@/lib/absorb'
+import { MAX_RENT_ACCOUNTS, FEE_WALLET, rentTotals, estimatedRentLabel, createRentReview, prepareRentRecovery, scanPumpRent, scanTokenRent, selectRentBatch, submitRentRecovery } from '@/lib/absorb'
+import type { RentAccount, RentKind, RecoveryKind } from '@/lib/absorb'
 import styles from './absorb.module.css'
 
 const sol = (lamports: number) => (lamports / LAMPORTS_PER_SOL).toFixed(9)
@@ -20,7 +20,7 @@ const titles = { token: 'Accounts', pump: 'Pump Reward', both: 'Accounts + Pump 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : 'Request failed. Please try again.').replace(/api-key=[^\s&"']+/gi, 'api-key=[redacted]')
 type Scan = { accounts: RentAccount[]; error: string | null }
 const emptyScan = (): Record<RentKind, Scan> => ({ token: { accounts: [], error: null }, pump: { accounts: [], error: null } })
-type Review = { kind: RecoveryKind; accounts: RentAccount[]; preview: RentPreview }
+type Review = ReturnType<typeof createRentReview>
 
 export default function AbsorbPage() {
   const { publicKey, signTransaction } = useWallet()
@@ -78,18 +78,14 @@ export default function AbsorbPage() {
     reviewHeading.current?.scrollIntoView({ block: 'center', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })
   }, [review])
 
-  const prepare = async (type: RecoveryKind, accounts: RentAccount[]) => {
+  const prepare = (type: RecoveryKind, accounts: RentAccount[]) => {
     if (!wallet || actionLock.current) return
-    actionLock.current = true
-    setBusy(true)
     setError(null)
     setReceipt(null)
     setReview(null)
     try {
-      const preview = await prepareRentRecovery(connection, new PublicKey(wallet), type, accounts)
-      if (isCurrent()) setReview({ kind: type, accounts, preview })
+      setReview(createRentReview(type, accounts))
     } catch (err) { if (isCurrent()) setError(errorText(err)) }
-    finally { actionLock.current = false; setBusy(false) }
   }
 
   const recover = async () => {
@@ -102,10 +98,6 @@ export default function AbsorbPage() {
       // Revalidate the exact reviewed accounts and update the blockhash before signing.
       const fresh = await prepareRentRecovery(connection, new PublicKey(wallet), review.kind, review.accounts)
       if (!isCurrent()) return
-      if (fresh.networkFee !== review.preview.networkFee) {
-        setReview({ ...review, preview: fresh })
-        throw new Error('Network fee changed. Review the updated estimate and confirm again.')
-      }
       const signed = await signTransaction(fresh.transaction)
       if (!isCurrent()) return
       const signature = await submitRentRecovery(connection, signed, fresh, isCurrent, signature => {
@@ -135,7 +127,11 @@ export default function AbsorbPage() {
   const selectedResults = selection.map(type => scanOwner === wallet ? scan[type] : { accounts: [], error: null })
   const selectedAccounts = selectedResults.flatMap(result => result.accounts)
   const eligible = selectedAccounts.filter(account => !account.blocked)
-  const batch = selectRentBatch(selectedAccounts)
+  const batch = useMemo(() => {
+    if (!wallet || scanOwner !== wallet) return []
+    const accounts = (['token', 'pump'] as const).flatMap(type => selectedKinds[type] ? scan[type].accounts : [])
+    return selectRentBatch(accounts, new PublicKey(wallet))
+  }, [wallet, scanOwner, scan, selectedKinds])
   const totals = rentTotals(batch)
   const scanError = selectedResults.map((result, index) => result.error ? `${titles[selection[index]]}: ${result.error}` : '').filter(Boolean).join(' ')
 
@@ -227,10 +223,10 @@ export default function AbsorbPage() {
           </p>
         )}
 
-        {eligible.length > MAX_RENT_ACCOUNTS && (
+        {eligible.length > batch.length && (
           <p className="text-sm text-muted-foreground">
             This transaction includes {batch.length} of {eligible.length} eligible accounts.
-            Remaining accounts stay available for another batch.
+            Batches use a {MAX_RENT_ACCOUNTS}-account cap and fit Solana's transaction-size limit. Remaining accounts stay available for another batch.
           </p>
         )}
       </>
