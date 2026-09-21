@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { ComputeBudgetProgram, ComputeBudgetInstruction, Keypair, PublicKey, SystemProgram, SystemInstruction, Transaction, VersionedTransaction } from '@solana/web3.js'
+import { ComputeBudgetProgram, ComputeBudgetInstruction, Keypair, PublicKey, SystemProgram, SystemInstruction, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, AccountLayout, AccountState } from '@solana/spl-token'
-import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, rentTotals, estimatedRentLabel, selectRentBatch, assertUnchanged, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery, recoveryMessageDifference } from '../lib/absorb.ts'
+import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, LIGHTHOUSE_PROGRAM_ID, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, rentTotals, estimatedRentLabel, selectRentBatch, assertUnchanged, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery, recoveryMessageDifference } from '../lib/absorb.ts'
 
 const signer = Keypair.fromSeed(Uint8Array.from({ length: 32 }, (_, index) => index + 1))
 const user = signer.publicKey
@@ -219,12 +219,91 @@ test('recovery mismatch diagnostics identify changes without broadcasting or exp
     preview.transaction.sign(signer)
     assert.equal(recoveryMessageDifference(preview.expectedMessage, preview.transaction.serializeMessage()), reason)
     await assert.rejects(submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {}), error => {
-      assert.ok(error.message.includes(`Recovery check v2: ${reason}`))
+      assert.ok(error.message.includes(`Recovery check v3: ${reason}`))
       assert.ok(!error.message.includes(user.toBase58()))
       return true
     })
     assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
   }
+})
+
+function lighthouseGuard(target = user) {
+  return new TransactionInstruction({
+    programId: LIGHTHOUSE_PROGRAM_ID,
+    keys: [{ pubkey: target, isSigner: false, isWritable: false }],
+    // AssertAccountInfo, silent log, Executable(false), Equal.
+    data: Buffer.from([5, 0, 7, 0, 0]),
+  })
+}
+
+test('two Phantom Lighthouse assertions may augment four recovery instructions; exact signed bytes are sent', async () => {
+  const rpc = mixedConnection(1)
+  rpc.getMultipleAccountsInfo = async () => [pumpInfo(), null]
+  const rows = [...await scanTokenRent(rpc, user), ...await scanPumpRent(rpc, user)]
+  const preview = await prepareRentRecovery(rpc, user, 'both', rows)
+  assert.equal(preview.transaction.instructions.length, 4)
+  const walletTx = Transaction.from(preview.transaction.serialize({ requireAllSignatures: false }))
+  walletTx.instructions.unshift(lighthouseGuard(user))
+  walletTx.add(lighthouseGuard(new PublicKey(rows[0].address)))
+  assert.equal(walletTx.instructions.length, 6)
+  walletTx.sign(signer)
+  const returned = Transaction.from(walletTx.serialize())
+  assert.equal(recoveryMessageDifference(preview.expectedMessage, returned.serializeMessage()), undefined)
+  await submitRentRecovery(rpc, returned, preview, () => true, () => {})
+  const send = rpc.calls.find(([type]) => type === 'send')
+  assert.deepEqual(send[1], returned.serialize(), 'never strip guards from signed bytes')
+  assert.equal(send[2].skipPreflight, false)
+})
+
+test('Lighthouse guards never permit modified recovery instructions, transfers, ordering, payer or blockhash', async () => {
+  for (const change of [
+    tx => { tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10 }) },
+    tx => { tx.instructions[1].keys[1].pubkey = other },
+    tx => { tx.instructions[2].keys[1].pubkey = other },
+    tx => { tx.instructions[2].data[4] ^= 1 },
+    tx => { tx.instructions.splice(1, 1) },
+    tx => { [tx.instructions[1], tx.instructions[2]] = [tx.instructions[2], tx.instructions[1]] },
+    tx => { tx.add(SystemProgram.transfer({ fromPubkey: user, toPubkey: other, lamports: 1 })) },
+    tx => { tx.recentBlockhash = address.toBase58() },
+    tx => { tx.feePayer = other },
+  ]) {
+    const rpc = mockConnection(), preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+    const walletTx = Transaction.from(preview.transaction.serialize({ requireAllSignatures: false }))
+    walletTx.add(lighthouseGuard())
+    change(walletTx)
+    await assert.rejects(submitRentRecovery(rpc, walletTx, preview, () => true, () => {}), /wallet changed/)
+    assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
+  }
+})
+
+test('unknown programs, Lighthouse memory writes, unknown opcodes and privilege escalation stay blocked', async () => {
+  for (const change of [
+    guard => { guard.programId = other },
+    guard => { guard.data[0] = 0 },
+    guard => { guard.data[0] = 1 },
+    guard => { guard.data[0] = 255 },
+    guard => { guard.data = Buffer.alloc(0) },
+    guard => { guard.keys.push({ pubkey: other, isSigner: false, isWritable: false }) },
+    guard => { guard.keys[0] = { pubkey: other, isSigner: false, isWritable: true } },
+    guard => { guard.keys[0] = { pubkey: other, isSigner: true, isWritable: false } },
+    guard => { guard.keys[0] = { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: true } },
+  ]) {
+    const rpc = mockConnection(), preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+    const walletTx = Transaction.from(preview.transaction.serialize({ requireAllSignatures: false }))
+    const guard = lighthouseGuard(); change(guard); walletTx.add(guard)
+    await assert.rejects(submitRentRecovery(rpc, walletTx, preview, () => true, () => {}), /wallet changed/)
+    assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
+  }
+})
+
+test('guard targets may be additional read-only accounts; assertion simulation failure still prevents sending', async () => {
+  const rpc = mockConnection(), preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+  preview.transaction.add(lighthouseGuard(other))
+  preview.transaction.sign(signer)
+  assert.equal(recoveryMessageDifference(preview.expectedMessage, preview.transaction.serializeMessage()), undefined)
+  rpc.simulateTransaction = async () => ({ value: { err: { InstructionError: [3, 'Custom'] } } })
+  await assert.rejects(submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {}), /simulation failed/)
+  assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
 })
 
 test('on-chain errors and confirmation timeouts never report success; sent signature remains available', async () => {

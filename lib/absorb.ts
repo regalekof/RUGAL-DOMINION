@@ -7,6 +7,11 @@ export type RentKind = 'token' | 'pump'
 export type RecoveryKind = RentKind | 'both'
 export type RentAccount = { address: string; program: string; label: string; lamports: number; blocked?: string }
 export const MAX_RENT_ACCOUNTS = 10
+// Phantom's documented transaction guards. Only the assertion-only variants
+// below are accepted, never MemoryWrite (0), MemoryClose (1), or unknown opcodes.
+// https://docs.phantom.com/developer-powertools/lighthouse
+// https://github.com/Jac0xb/lighthouse/blob/main/programs/lighthouse/src/instruction.rs
+export const LIGHTHOUSE_PROGRAM_ID = new PublicKey('L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95')
 export const FEE_WALLET = new PublicKey('Dkmdvd9iZWKGXiSNExgYYX7PZNncewM4WqHBgN1knUzH')
 export const TOKEN_PROGRAMS = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]
 export const PUMP_PROGRAMS = [
@@ -160,7 +165,7 @@ export async function prepareRentRecovery(connection: Connection, user: PublicKe
   // Declare the price before estimating, simulating and asking for a signature.
   // Phantom otherwise injects priority instructions at signing, invalidating our
   // exact-message check. Zero preserves the existing base-fee-only policy; leave
-  // the default compute-unit limit intact. Never relax the signed-message check.
+  // the default compute-unit limit intact. Recovery instructions remain protected.
   // https://docs.phantom.com/developer-powertools/solana-priority-fees
   transaction.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 0 }))
   selected.forEach(account => transaction.add(closeRentInstruction(accountRentKind(account), account, user)))
@@ -182,6 +187,40 @@ export async function prepareRentRecovery(connection: Connection, user: PublicKe
 
 export type RentPreview = Awaited<ReturnType<typeof prepareRentRecovery>>
 
+function lighthouseMessageDifference(before: Message, after: Message): string | undefined {
+  const beforeKeys = new Map(before.accountKeys.map((key, index) => [key.toBase58(), index]))
+  const afterKeys = new Map(after.accountKeys.map((key, index) => [key.toBase58(), index]))
+  if (beforeKeys.size !== before.accountKeys.length || afterKeys.size !== after.accountKeys.length) return 'duplicate account keys'
+  for (const [key, index] of beforeKeys) {
+    const next = afterKeys.get(key)
+    if (next === undefined) return 'original account removed'
+    if (before.isAccountSigner(index) !== after.isAccountSigner(next) || before.isAccountWritable(index) !== after.isAccountWritable(next)) return 'signer or account permissions changed'
+  }
+  // Additional guard-only accounts must never receive signing/write privileges.
+  for (const [key, index] of afterKeys) {
+    if (!beforeKeys.has(key) && (after.isAccountSigner(index) || after.isAccountWritable(index))) return 'added signer or writable account'
+  }
+  const original = before.compiledInstructions
+  let position = 0
+  for (const instruction of after.compiledInstructions) {
+    const program = after.accountKeys[instruction.programIdIndex]
+    if (program.equals(LIGHTHOUSE_PROGRAM_ID)) {
+      // These one-account variants only assert account data/info or mint/token
+      // state. Payload validity is also checked by the exact signed simulation.
+      const allowed = [2, 3, 5, 6, 7, 8, 9, 10]
+      if (instruction.data.length < 3 || !allowed.includes(instruction.data[0]) || instruction.accountKeyIndexes.length !== 1) return 'unsupported Lighthouse guard'
+      continue
+    }
+    const previous = original[position]
+    if (!previous) return 'unexpected non-guard instruction added'
+    if (!program.equals(before.accountKeys[previous.programIdIndex])) return `instruction ${position + 1} program or order changed`
+    if (!Buffer.from(instruction.data).equals(Buffer.from(previous.data))) return `instruction ${position + 1} data changed`
+    if (instruction.accountKeyIndexes.length !== previous.accountKeyIndexes.length || instruction.accountKeyIndexes.some((key, index) => !after.accountKeys[key].equals(before.accountKeys[previous.accountKeyIndexes[index]]))) return `instruction ${position + 1} accounts changed`
+    position++
+  }
+  if (position !== original.length) return 'original instruction removed'
+}
+
 // Compare byte values rather than relying on a wallet's Buffer implementation.
 // Diagnostics deliberately contain no wallet addresses, signatures or RPC URLs.
 export function recoveryMessageDifference(expected: Uint8Array, actual: Uint8Array): string | undefined {
@@ -192,6 +231,9 @@ export function recoveryMessageDifference(expected: Uint8Array, actual: Uint8Arr
     if (before.recentBlockhash !== after.recentBlockhash) return 'blockhash changed'
     const budget = (message: Message) => message.instructions.filter(ix => message.accountKeys[ix.programIdIndex].equals(ComputeBudgetProgram.programId)).map(ix => ix.data)
     if (JSON.stringify(budget(before)) !== JSON.stringify(budget(after))) return 'compute-budget instructions changed'
+    if (after.instructions.some(ix => after.accountKeys[ix.programIdIndex].equals(LIGHTHOUSE_PROGRAM_ID))) {
+      return lighthouseMessageDifference(before, after)
+    }
     if (before.instructions.length !== after.instructions.length) return `instruction count changed (${before.instructions.length} to ${after.instructions.length})`
     if (JSON.stringify(before.header) !== JSON.stringify(after.header)) return 'signer or account permissions changed'
     if (before.accountKeys.length !== after.accountKeys.length) return 'account list changed'
@@ -211,7 +253,7 @@ export function recoveryMessageDifference(expected: Uint8Array, actual: Uint8Arr
 export async function submitRentRecovery(connection: Connection, signed: Transaction, preview: RentPreview, stillCurrent: () => boolean, onSent: (signature: string) => void) {
   if (!stillCurrent()) throw new Error('Wallet or network changed; transaction not sent.')
   const difference = recoveryMessageDifference(preview.expectedMessage, signed.serializeMessage())
-  if (difference) throw new Error(`The wallet changed the transaction; review again. [Recovery check v2: ${difference}]. Nothing was sent.`)
+  if (difference) throw new Error(`The wallet changed the transaction; review again. [Recovery check v3: ${difference}]. Nothing was sent.`)
   // A wallet prompt can stay open for minutes. Recheck after approval as well.
   const fresh = await scanRecoveryRent(connection, preview.user, preview.kind)
   assertUnchanged(preview.selected, fresh)
