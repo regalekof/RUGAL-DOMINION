@@ -10,7 +10,7 @@ import { SiteHeader } from '@/components/site-header'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { addLeaderboardPoints } from '@/components/leaderboard'
-import { MAX_RENT_ACCOUNTS, FEE_WALLET, rentTotals, estimatedRentLabel, createRentReview, prepareRentRecovery, scanPumpRent, scanTokenRent, selectRentBatch, submitRentRecovery } from '@/lib/absorb'
+import { MAX_RENT_ACCOUNTS, FEE_WALLET, rentTotals, estimatedRentLabel, createRentReview, prepareRentRecovery, scanRentCategories, selectRentBatch, submitRentRecovery } from '@/lib/absorb'
 import type { RentAccount, RentKind, RecoveryKind } from '@/lib/absorb'
 import styles from './absorb.module.css'
 
@@ -18,8 +18,8 @@ const sol = (lamports: number) => (lamports / LAMPORTS_PER_SOL).toFixed(9)
 const short = (address: string) => `${address.slice(0, 6)}…${address.slice(-6)}`
 const titles = { token: 'Accounts', pump: 'Pump Reward', both: 'Accounts + Pump Reward' }
 const errorText = (error: unknown) => (error instanceof Error ? error.message : 'Request failed. Please try again.').replace(/api-key=[^\s&"']+/gi, 'api-key=[redacted]')
-type Scan = { accounts: RentAccount[]; error: string | null }
-const emptyScan = (): Record<RentKind, Scan> => ({ token: { accounts: [], error: null }, pump: { accounts: [], error: null } })
+type Scan = { accounts: RentAccount[]; error: string | null; loading: boolean }
+const emptyScan = (loading = false): Record<RentKind, Scan> => ({ token: { accounts: [], error: null, loading }, pump: { accounts: [], error: null, loading } })
 type Review = ReturnType<typeof createRentReview>
 
 export default function AbsorbPage() {
@@ -37,6 +37,7 @@ export default function AbsorbPage() {
   const [scanOwner, setScanOwner] = useState('')
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState('Preparing transaction…')
   const [selectedKinds, setSelectedKinds] = useState<Record<RentKind, boolean>>({ token: true, pump: false })
   const [review, setReview] = useState<Review | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -48,20 +49,16 @@ export default function AbsorbPage() {
   const refresh = useCallback(async () => {
     const id = ++request.current
     setReview(null)
-    setScan(emptyScan())
-    setScanOwner('')
+    setScan(emptyScan(!!wallet))
+    setScanOwner(wallet)
     if (!wallet) { setLoading(false); return }
     setLoading(true)
     const user = new PublicKey(wallet)
-    const results = await Promise.allSettled([scanTokenRent(connection, user), scanPumpRent(connection, user)])
-    if (!isCurrent() || id !== request.current) return
-    const resultScan = emptyScan()
-    ;(['token', 'pump'] as const).forEach((type, index) => {
-      const result = results[index]
-      resultScan[type] = result.status === 'fulfilled' ? { accounts: result.value, error: null } : { accounts: [], error: errorText(result.reason) }
+    await scanRentCategories(connection, user, (type, result) => {
+      if (!isCurrent() || id !== request.current) return
+      setScan(previous => ({ ...previous, [type]: { accounts: result.accounts, error: result.error ? errorText(result.error) : null, loading: false } }))
     })
-    setScan(resultScan)
-    setScanOwner(wallet)
+    if (!isCurrent() || id !== request.current) return
     setLoading(false)
   }, [wallet, connection, isCurrent])
 
@@ -92,17 +89,21 @@ export default function AbsorbPage() {
     if (!review || !wallet || !signTransaction || actionLock.current) return
     actionLock.current = true
     setBusy(true)
+    setProgress('Preparing transaction…')
     setError(null)
     let sent = false
     try {
       // Revalidate the exact reviewed accounts and update the blockhash before signing.
       const fresh = await prepareRentRecovery(connection, new PublicKey(wallet), review.kind, review.accounts)
       if (!isCurrent()) return
+      setProgress('Waiting for wallet approval…')
       const signed = await signTransaction(fresh.transaction)
       if (!isCurrent()) return
       const signature = await submitRentRecovery(connection, signed, fresh, isCurrent, signature => {
         sent = true
         if (isCurrent()) { setReceipt({ signature, kind: review.kind, confirmed: false }); setReview(null) }
+      }, stage => {
+        if (isCurrent()) setProgress({ validating: 'Validating signed transaction…', sending: 'Sending transaction…', confirming: 'Waiting for network confirmation…' }[stage])
       })
       if (isCurrent()) setReceipt({ signature, kind: review.kind, confirmed: true })
       // Keep optional leaderboard writes sequential, but do not block the
@@ -113,18 +114,19 @@ export default function AbsorbPage() {
           await addLeaderboardPoints(wallet, 'absorb', i === 0 ? fresh.fee / LAMPORTS_PER_SOL : 0, referral)
         }
       } catch { /* Optional leaderboard does not affect recovery. */ } })()
-      if (isCurrent()) await refresh()
+      if (isCurrent()) void refresh()
     } catch (err) {
       if (isCurrent()) {
         setError(`${errorText(err)}${sent ? ' Check the transaction below before retrying; confirmation may be delayed.' : ''}`)
-        if (sent) await refresh()
+        if (sent) void refresh()
       }
     } finally { actionLock.current = false; setBusy(false) }
   }
 
   const selection = (['token', 'pump'] as const).filter(type => selectedKinds[type])
   const recoveryKind: RecoveryKind = selection.length === 2 ? 'both' : selection[0] ?? 'token'
-  const selectedResults = selection.map(type => scanOwner === wallet ? scan[type] : { accounts: [], error: null })
+  const selectedResults = selection.map(type => scanOwner === wallet ? scan[type] : { accounts: [], error: null, loading: true })
+  const selectedLoading = selectedResults.some(result => result.loading)
   const selectedAccounts = selectedResults.flatMap(result => result.accounts)
   const eligible = selectedAccounts.filter(account => !account.blocked)
   const batch = useMemo(() => {
@@ -157,6 +159,7 @@ export default function AbsorbPage() {
             <Button variant="outline" onClick={() => { setError(null); void refresh() }} disabled={!wallet || loading || busy}><RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />{loading ? 'Scanning…' : 'Refresh'}</Button>
           </div>
           {error && <div role="alert" className="rounded border border-red-500/40 bg-red-500/10 p-4 text-sm break-words">{error}</div>}
+          {busy && <p role="status" aria-live="polite" className="text-center text-sm text-muted-foreground">{progress}</p>}
           {receipt && (
             <div role="status" className="rounded border border-green-500/40 bg-green-500/10 p-4">
               <p>{titles[receipt.kind]} — {receipt.confirmed ? 'recovery confirmed.' : 'submitted; confirmation not yet verified.'}</p>
@@ -167,9 +170,9 @@ export default function AbsorbPage() {
             <p className="text-center text-sm text-muted-foreground">Select one or both · Recover together in one transaction</p>
             <div role="group" aria-label="Choose rent recovery types" className={styles.choices}>
               {(['token', 'pump'] as const).map(type => {
-                const result = scanOwner === wallet ? scan[type] : { accounts: [], error: null }
+                const result = scanOwner === wallet ? scan[type] : { accounts: [], error: null, loading: !!wallet }
                 const eligible = result.accounts.filter(account => !account.blocked)
-                const ready = !!wallet && scanOwner === wallet && !loading && !result.error
+                const ready = !!wallet && scanOwner === wallet && !result.loading && !result.error
                 return (
                   <button key={type} type="button" aria-label={titles[type]} aria-pressed={selectedKinds[type]} aria-controls="rent-recovery-summary" onClick={() => toggleKind(type)} disabled={busy} className={`${styles.choice} ${type === 'pump' ? styles.pump : ''}`}>
                     <span className={styles.orb} aria-hidden="true">
@@ -178,7 +181,7 @@ export default function AbsorbPage() {
                     </span>
                     <span className={styles.choiceTitle}>{titles[type]}</span>
                     <span className={styles.choiceSubtitle}>{type === 'token' ? 'SPL & Token-2022' : 'Pump account rent'}</span>
-                    <span className={styles.availableLabel}>{result.error ? 'Scan unavailable' : loading ? 'Scanning…' : 'Estimated rent'}</span>
+                    <span className={styles.availableLabel}>{result.error ? 'Scan unavailable' : result.loading ? 'Scanning…' : 'Estimated rent'}</span>
                     <span className={styles.amount}>{ready ? estimatedRentLabel(eligible.length) : '—'} <span>SOL</span></span>
                     <span className={styles.count}>{ready ? `${eligible.length} eligible account${eligible.length === 1 ? '' : 's'}` : result.error ? 'Refresh to retry' : wallet ? 'Checking eligibility' : 'Connect to discover'}</span>
                     <span className={styles.selectionLabel}>{selectedKinds[type] ? 'Selected' : 'Select'}</span>
@@ -212,12 +215,12 @@ export default function AbsorbPage() {
             ? 'Nothing selected.'
             : !wallet
               ? 'Connect your wallet above to get started.'
-              : loading
+              : selectedLoading
                 ? 'Finding eligible accounts…'
                 : `${eligible.length} account${eligible.length === 1 ? '' : 's'} ready for recovery`}
         </p>
 
-        {wallet && selection.length > 0 && !loading && selectedAccounts.length === 0 && (
+        {wallet && selection.length > 0 && !selectedLoading && selectedAccounts.length === 0 && (
           <p className="text-sm text-muted-foreground">
             No accounts found for your selection.
           </p>
@@ -237,7 +240,7 @@ export default function AbsorbPage() {
       disabled={
         !wallet ||
         !signTransaction ||
-        loading ||
+        selectedLoading ||
         busy ||
         !!scanError ||
         !batch.length ||
@@ -248,7 +251,7 @@ export default function AbsorbPage() {
       {busy ? (
         <>
           <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-          Processing…
+          {progress}
         </>
       ) : (
         <>
@@ -267,7 +270,7 @@ export default function AbsorbPage() {
           {review && <Card className={styles.detailsCard}>
             <CardHeader><h2 ref={reviewHeading} tabIndex={-1} className="text-xl font-semibold outline-none">Recover {review.accounts.length} account{review.accounts.length === 1 ? '' : 's'}</h2></CardHeader>
             <CardContent className="space-y-4 text-sm">
-              <div className="flex flex-wrap gap-3"><Button onClick={() => void recover()} disabled={busy}>{busy ? 'Processing…' : 'Approve in wallet'}</Button><Button variant="outline" onClick={() => setReview(null)} disabled={busy}>Cancel</Button></div>
+              <div className="flex flex-wrap gap-3"><Button onClick={() => void recover()} disabled={busy}>{busy ? progress : 'Approve in wallet'}</Button><Button variant="outline" onClick={() => setReview(null)} disabled={busy}>Cancel</Button></div>
             </CardContent>
           </Card>}
         </div>

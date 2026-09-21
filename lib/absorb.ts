@@ -119,6 +119,15 @@ export async function scanPumpRent(connection: Connection, user: PublicKey): Pro
   return rows.filter((row): row is NonNullable<typeof row> => row !== null)
 }
 
+export async function scanRentCategories(connection: Connection, user: PublicKey, onResult: (kind: RentKind, result: { accounts: RentAccount[]; error: unknown | null }) => void) {
+  // Publish each category independently; a slow Pump scan must not hide token results.
+  await Promise.all((['token', 'pump'] as const).map(kind =>
+    (kind === 'token' ? scanTokenRent(connection, user) : scanPumpRent(connection, user)).then(
+      accounts => onResult(kind, { accounts, error: null }),
+      error => onResult(kind, { accounts: [], error }),
+    )))
+}
+
 export function accountRentKind(account: RentAccount): RentKind {
   if (TOKEN_PROGRAMS.some(id => id.toBase58() === account.program)) return 'token'
   if (PUMP_PROGRAMS.some(({ id }) => id.toBase58() === account.program)) return 'pump'
@@ -252,7 +261,10 @@ export async function prepareRentRecovery(connection: Connection, user: PublicKe
 }
 
 async function prepareRentRecoveryOnce(connection: Connection, user: PublicKey, kind: RecoveryKind, selected: RentAccount[]) {
-  const fresh = await scanRecoveryRent(connection, user, kind, selected)
+  const [fresh, balance] = await Promise.all([
+    scanRecoveryRent(connection, user, kind, selected),
+    retryRecoveryRead(() => connection.getBalance(user, 'confirmed')),
+  ])
   assertUnchanged(selected, fresh)
   const totals = rentTotals(selected)
   const blockhashResponse = await retryRecoveryRead(() => connection.getLatestBlockhashAndContext('confirmed'))
@@ -266,9 +278,9 @@ async function prepareRentRecoveryOnce(connection: Connection, user: PublicKey, 
     throw error
   }
   const message = transaction.compileMessage()
-  const [feeEstimate, balance] = await Promise.all([
+  const [feeEstimate, simulation] = await Promise.all([
     retryRecoveryRead(() => connection.getFeeForMessage(message, 'confirmed')),
-    retryRecoveryRead(() => connection.getBalance(user, 'confirmed')),
+    simulateRecovery(connection, new VersionedTransaction(message), minContextSlot, false),
   ])
   const networkFee = feeEstimate.value
   if (networkFee === null) throw new RecoveryBlockhashError()
@@ -276,7 +288,6 @@ async function prepareRentRecoveryOnce(connection: Connection, user: PublicKey, 
   if (totals.net <= networkFee) throw new Error('Network fees would exceed the rent recovered.')
   // Wrap legacy messages to avoid the legacy simulateTransaction overload, which
   // can replace the blockhash of a signed transaction.
-  const simulation = await simulateRecovery(connection, new VersionedTransaction(message), minContextSlot, false)
   if (simulation.value.err) throw new Error(`Recovery simulation failed: ${JSON.stringify(simulation.value.err)}. Nothing was sent.`)
   return { transaction, expectedMessage: transaction.serializeMessage(), latest, minContextSlot, networkFee, kind, user, selected: selected.map(account => ({ ...account })), ...totals }
 }
@@ -346,19 +357,24 @@ export function recoveryMessageDifference(expected: Uint8Array, actual: Uint8Arr
   }
 }
 
-export async function submitRentRecovery(connection: Connection, signed: Transaction, preview: RentPreview, stillCurrent: () => boolean, onSent: (signature: string) => void) {
+export async function submitRentRecovery(connection: Connection, signed: Transaction, preview: RentPreview, stillCurrent: () => boolean, onSent: (signature: string) => void, onProgress?: (stage: 'validating' | 'sending' | 'confirming') => void) {
   if (!stillCurrent()) throw new Error('Wallet or network changed; transaction not sent.')
   const difference = recoveryMessageDifference(preview.expectedMessage, signed.serializeMessage())
   if (difference) throw new Error(`The wallet changed the transaction; review again. [Recovery check v3: ${difference}]. Nothing was sent.`)
   // A wallet prompt can stay open for minutes. Recheck after approval as well.
-  const fresh = await scanRecoveryRent(connection, preview.user, preview.kind, preview.selected)
-  assertUnchanged(preview.selected, fresh)
   const bytes = signed.serialize()
-  const simulation = await simulateRecovery(connection, VersionedTransaction.deserialize(bytes), preview.minContextSlot, true)
+  onProgress?.('validating')
+  const [fresh, simulation] = await Promise.all([
+    scanRecoveryRent(connection, preview.user, preview.kind, preview.selected),
+    simulateRecovery(connection, VersionedTransaction.deserialize(bytes), preview.minContextSlot, true),
+  ])
+  assertUnchanged(preview.selected, fresh)
   if (simulation.value.err) throw new Error(`Recovery simulation failed: ${JSON.stringify(simulation.value.err)}. Nothing was sent.`)
   if (!stillCurrent()) throw new Error('Wallet or network changed; transaction not sent.')
+  onProgress?.('sending')
   const signature = await connection.sendRawTransaction(bytes, { skipPreflight: false, preflightCommitment: 'confirmed', minContextSlot: preview.minContextSlot, maxRetries: 3 })
   onSent(signature)
+  onProgress?.('confirming')
   const confirmation = await connection.confirmTransaction({ signature, ...preview.latest }, 'confirmed')
   if (confirmation.value.err) throw new Error(`Transaction failed on-chain: ${JSON.stringify(confirmation.value.err)}`)
   return signature

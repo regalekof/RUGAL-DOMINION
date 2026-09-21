@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { ComputeBudgetProgram, ComputeBudgetInstruction, Keypair, PublicKey, SystemProgram, SystemInstruction, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, AccountLayout, AccountState } from '@solana/spl-token'
-import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, RENT_BATCH_BYTE_TARGET, LIGHTHOUSE_PROGRAM_ID, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, rentTotals, estimatedRentLabel, createRentReview, selectRentBatch, assertUnchanged, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery, recoveryMessageDifference, retryRecoveryRead } from '../lib/absorb.ts'
+import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, RENT_BATCH_BYTE_TARGET, LIGHTHOUSE_PROGRAM_ID, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, rentTotals, estimatedRentLabel, createRentReview, selectRentBatch, assertUnchanged, scanRentCategories, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery, recoveryMessageDifference, retryRecoveryRead } from '../lib/absorb.ts'
 
 const signer = Keypair.fromSeed(Uint8Array.from({ length: 32 }, (_, index) => index + 1))
 const user = signer.publicKey
@@ -485,7 +485,7 @@ test('scan transport recovery retries only the failed request and never retries 
   assert.equal(sends, 1)
 })
 
-test('fee and balance reads run concurrently without skipping the balance check', async () => {
+test('earlier balance reads do not skip the affordability check', async () => {
   const rpc = mockConnection()
   let balanceStarted = false
   rpc.getFeeForMessage = async () => {
@@ -641,4 +641,72 @@ test('extension accounts can reach simulation, but program rejection still preve
   await assert.rejects(prepareRentRecovery(rpc, user, 'token', [row]), /simulation failed/)
   assert.equal(simulations, 1)
   assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
+})
+
+test('token scan results are published while the Pump scan is still pending', async () => {
+  const rpc = mockConnection()
+  let releasePump, reportToken
+  rpc.getMultipleAccountsInfo = () => new Promise(resolve => { releasePump = resolve })
+  const tokenReady = new Promise(resolve => { reportToken = resolve })
+  const results = []
+  const finished = scanRentCategories(rpc, user, (kind, result) => {
+    results.push([kind, result])
+    if (kind === 'token') reportToken()
+  })
+  await tokenReady
+  assert.deepEqual(results.map(([kind]) => kind), ['token'])
+  assert.equal(results[0][1].accounts.length, 1)
+  releasePump([null, null])
+  await finished
+  assert.deepEqual(results.map(([kind]) => kind), ['token', 'pump'])
+})
+
+test('a failing category does not discard another category scan result', async () => {
+  const rpc = mockConnection()
+  rpc.getMultipleAccountsInfo = async () => { throw new Error('RPC unavailable') }
+  const results = {}
+  await scanRentCategories(rpc, user, (kind, result) => { results[kind] = result })
+  assert.equal(results.token.accounts.length, 1)
+  assert.equal(results.token.error, null)
+  assert.match(results.pump.error.message, /RPC unavailable/)
+  assert.deepEqual(results.pump.accounts, [])
+})
+
+test('preparation overlaps balance with account reads and fee estimation with unsigned simulation', async () => {
+  const rpc = mockConnection()
+  let balanceStarted = false, simulationStarted = false
+  rpc.getMultipleAccountsInfo = async () => {
+    await Promise.resolve()
+    assert.ok(balanceStarted, 'balance read must not wait for account validation')
+    return [tokenInfo()]
+  }
+  rpc.getBalance = async () => { balanceStarted = true; return 5000 }
+  rpc.getFeeForMessage = async () => {
+    await Promise.resolve()
+    assert.ok(simulationStarted, 'simulation must not wait for fee estimation')
+    return { value: 5000 }
+  }
+  rpc.simulateTransaction = async () => { simulationStarted = true; return { value: { err: null } } }
+  await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+})
+
+test('post-sign validation and simulation overlap, but no send occurs until both pass', async () => {
+  for (const changed of [false, true]) {
+    const rpc = mockConnection(), preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+    preview.transaction.sign(signer)
+    let releaseRead, reportSimulation
+    rpc.getMultipleAccountsInfo = () => new Promise(resolve => { releaseRead = resolve })
+    const simulationStarted = new Promise(resolve => { reportSimulation = resolve })
+    rpc.simulateTransaction = async () => { reportSimulation(); return { value: { err: null } } }
+    const progress = []
+    const submission = submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {}, stage => progress.push(stage))
+    const outcome = changed ? assert.rejects(submission, /account changed/) : submission
+    await simulationStarted
+    assert.deepEqual(progress, ['validating'])
+    assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
+    releaseRead(changed ? [null] : [tokenInfo()])
+    await outcome
+    assert.deepEqual(progress, changed ? ['validating'] : ['validating', 'sending', 'confirming'])
+    assert.equal(rpc.calls.some(([type]) => type === 'send'), !changed)
+  }
 })
