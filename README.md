@@ -1,4 +1,4 @@
-# Rugal's Dominion
+# RUGAL-Dominion
 
 A Solana wallet-cleanup app with a King of Fighters-inspired red-and-purple theme. Burn unwanted tokens, manage supported NFTs, and recover rent from eligible unused accounts through **Omega Absorption**.
 
