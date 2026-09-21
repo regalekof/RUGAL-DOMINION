@@ -12,7 +12,7 @@ A Solana wallet-cleanup app with a King of Fighters-inspired red-and-purple them
 - USDC and USDT are hidden from the token-burn list and blocked from burn transaction construction using their official mainnet mint addresses.
 - Open submitted transactions in Solscan.
 
-The current burn components use the original SPL Token Program. Token-2022 support below applies to Absorb, not to the burn components. NFT support is limited to the implemented legacy-token flow; do not assume support for compressed or programmable NFTs.
+Token burning scans both the original SPL Token Program and Token-2022, and uses each account's owning program for burning and closing. Frozen accounts, foreign close authorities, withheld tokens, and unsupported account extensions are blocked. Account and mint state are rechecked before constructing instructions. NFT support remains limited to the implemented legacy-token flow; do not assume support for compressed or programmable NFTs.
 
 ### Omega Absorption
 
@@ -98,7 +98,7 @@ pnpm exec tsc --noEmit
 # Offline Absorb checks
 pnpm test:absorb
 
-# Stablecoin burn-protection checks
+# Token discovery, program routing and burn-protection checks
 node --experimental-strip-types --test tests/burn-protection.test.mjs
 
 # Production build

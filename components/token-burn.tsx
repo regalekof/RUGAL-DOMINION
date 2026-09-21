@@ -1,16 +1,15 @@
 "use client"
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { useConnection } from '@solana/wallet-adapter-react'
-import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js'
-import { TOKEN_PROGRAM_ID, createBurnCheckedInstruction, createCloseAccountInstruction } from '@solana/spl-token'
+import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, VersionedTransaction } from '@solana/web3.js'
 import { getTokenMetadata } from '@/lib/metaplex-utils'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { Flame, Zap, ExternalLink, CheckCircle } from 'lucide-react'
 import { addLeaderboardPoints } from '@/components/leaderboard'
-import { isProtectedBurnMint } from '@/lib/burn-protection'
+import { isProtectedBurnMint, scanBurnTokens, burnBlockReason, createCheckedBurnInstructions } from '@/lib/burn-protection'
 
 // Fee wallet address
 const FEE_WALLET = new PublicKey('5YjWWvfD1r2YaHqtHbzBYvyjWbpLYT8ebVgyngCJXFVU')
@@ -26,6 +25,8 @@ interface Token {
   amount: string
   decimals: number
   tokenAccount: PublicKey
+  programId: PublicKey
+  blocked?: string
   image?: string
   description?: string
   isFrozen?: boolean
@@ -58,6 +59,8 @@ export function TokenBurn() {
   const [selectedTokens, setSelectedTokens] = useState<Set<string>>(new Set())
   const [hasInitialFetch, setHasInitialFetch] = useState(false)
   const [successTx, setSuccessTx] = useState<string | null>(null)
+  const fetchGeneration = useRef(0)
+  const [fetchError, setFetchError] = useState<string | null>(null)
 
   // Function to fetch token metadata
   const fetchTokenMetadata = async (mint: string): Promise<{ image?: string; description?: string; symbol?: string }> => {
@@ -155,6 +158,7 @@ export function TokenBurn() {
 
 
   const fetchTokens = useCallback(async () => {
+      const generation = ++fetchGeneration.current
       if (!publicKey) {
         console.log('No public key available')
         return
@@ -162,12 +166,11 @@ export function TokenBurn() {
 
       try {
         setIsFetching(true)
+        setFetchError(null)
       console.log('Starting token fetch for wallet:', publicKey.toString())
         
       // Get all token accounts
-        const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
-          programId: TOKEN_PROGRAM_ID,
-        })
+        const tokenAccounts = { value: await scanBurnTokens(connection, publicKey) }
 
       console.log('Found token accounts:', tokenAccounts.value.length)
         
@@ -269,10 +272,12 @@ export function TokenBurn() {
               mint: parsedInfo.mint,
               name: tokenName,
               symbol: tokenSymbol,
-              balance: parsedInfo.tokenAmount.uiAmount,
+              balance: parsedInfo.tokenAmount.uiAmount ?? Number(parsedInfo.tokenAmount.uiAmountString ?? 0),
               amount: parsedInfo.tokenAmount.amount,
               decimals: parsedInfo.tokenAmount.decimals,
                 tokenAccount: pubkey,
+              programId: account.owner,
+              blocked: burnBlockReason(parsedInfo, publicKey),
               image: tokenImage,
               description: undefined,
               isFrozen: isFrozen
@@ -291,28 +296,33 @@ export function TokenBurn() {
       console.log('🔍 Token count:', finalTokenList.length)
 
       // Update state only once with all tokens
+      if (generation !== fetchGeneration.current) return
       setTokens(finalTokenList)
       setHasInitialFetch(true)
       } catch (error) {
       console.error('Error in fetchTokens:', error)
-        // Silently fail - don't show error message to user
+        if (generation === fetchGeneration.current) setFetchError('Could not load tokens. Please refresh and try again.')
       } finally {
-        setIsFetching(false)
+        if (generation === fetchGeneration.current) setIsFetching(false)
       }
   }, [publicKey, toast, connection, signTransaction])
 
-  // Only fetch tokens when the wallet is connected and hasn't been fetched before
+  // Reset on wallet/network changes and ignore stale metadata responses.
   useEffect(() => {
-    if (publicKey && !hasInitialFetch) {
-      fetchTokens()
-    }
-  }, [publicKey, hasInitialFetch, fetchTokens])
+    setTokens([])
+    setSelectedTokens(new Set())
+    setHasInitialFetch(false)
+    setSuccessTx(null)
+    setFetchError(null)
+    if (publicKey) void fetchTokens()
+    return () => { fetchGeneration.current++ }
+  }, [publicKey, fetchTokens])
 
   // Memoize the token list to prevent unnecessary re-renders
   const memoizedTokens = useMemo(() => tokens.filter(token => !isProtectedBurnMint(token.mint)), [tokens])
 
   const toggleTokenSelection = (address: string) => {
-    if (!memoizedTokens.some(token => token.address === address)) return
+    if (isLoading || !memoizedTokens.some(token => token.address === address && !token.blocked && !token.isFrozen)) return
     setSelectedTokens(prev => {
       const newSet = new Set(prev)
       if (newSet.has(address)) {
@@ -326,7 +336,7 @@ export function TokenBurn() {
 
   const selectAllTokens = () => {
     const burnableTokenAddresses = memoizedTokens
-      .filter(token => !token.isFrozen)
+      .filter(token => !token.isFrozen && !token.blocked)
       .map(token => token.address)
     setSelectedTokens(new Set(burnableTokenAddresses))
   }
@@ -358,6 +368,7 @@ export function TokenBurn() {
       if (tokensToBurn.some(token => isProtectedBurnMint(token.mint))) {
         throw new Error('USDC and USDT are excluded from burning. Clear your selection and try again.')
       }
+      if (tokensToBurn.some(token => token.blocked || token.isFrozen)) throw new Error('A selected token cannot be burned. Refresh and review again.')
       
       // Calculate rent exemption amount
       const rentExemptionLamports = await connection.getMinimumBalanceForRentExemption(165)
@@ -394,26 +405,7 @@ export function TokenBurn() {
       for (const token of tokensToBurn) {
         console.log('🔧 Creating burn instruction for token:', token.address, 'balance:', token.balance)
         
-      const burnInstruction = createBurnCheckedInstruction(
-        token.tokenAccount,
-          new PublicKey(token.mint),
-        publicKey,
-          BigInt(token.amount),
-          token.decimals,
-          [],
-          TOKEN_PROGRAM_ID
-      )
-
-      const closeInstruction = createCloseAccountInstruction(
-        token.tokenAccount,
-          publicKey,
-          publicKey,
-          [],
-          TOKEN_PROGRAM_ID
-        )
-
-        transaction.add(burnInstruction)
-        transaction.add(closeInstruction)
+        transaction.add(...await createCheckedBurnInstructions(connection, publicKey, token))
         console.log('✅ Added burn and close instructions for:', token.address)
       }
 
@@ -448,7 +440,8 @@ export function TokenBurn() {
      // Sign first, then simulate the exact signed transaction.
 const signedTransaction = await signTransaction(transaction)
 
-const simulation = await connection.simulateTransaction(signedTransaction)
+const signedBytes = signedTransaction.serialize()
+const simulation = await connection.simulateTransaction(VersionedTransaction.deserialize(signedBytes), { sigVerify: true, commitment: 'confirmed' })
 
 if (simulation.value.err) {
   const logs = simulation.value.logs?.slice(-4).join(' | ')
@@ -470,9 +463,10 @@ console.log('✅ Transaction simulation successful')
 
 // Send the exact transaction that was signed and simulated.
 const signature = await connection.sendRawTransaction(
-  signedTransaction.serialize(),
+  signedBytes,
   {
-    skipPreflight: true,
+    skipPreflight: false,
+    preflightCommitment: 'confirmed',
     maxRetries: 3,
   }
 )
@@ -577,6 +571,7 @@ const signature = await connection.sendRawTransaction(
             <div className="flex justify-center gap-4 mb-6">
               <Button
                 onClick={selectAllTokens}
+                disabled={isLoading}
                 variant="outline"
                 className="border-purple-500 text-purple-300 hover:bg-purple-500/20"
               >
@@ -584,6 +579,7 @@ const signature = await connection.sendRawTransaction(
               </Button>
               <Button
                 onClick={deselectAllTokens}
+                disabled={isLoading}
                 variant="outline"
                 className="border-red-500 text-red-300 hover:bg-red-500/20"
               >
@@ -599,7 +595,7 @@ const signature = await connection.sendRawTransaction(
                 <div className="flex flex-col items-center text-center space-y-3">
                   <div 
                     className={`flex-shrink-0 transition-all ${
-                      token.isFrozen 
+                      token.blocked || token.isFrozen || isLoading
                         ? 'cursor-not-allowed opacity-50' 
                         : 'cursor-pointer hover:scale-105'
                     }`}
@@ -671,6 +667,7 @@ const signature = await connection.sendRawTransaction(
                       {token.symbol}
                     </span>
                     <p className="text-green-400 font-medium text-sm">Balance: {token.balance.toLocaleString()}</p>
+                    {token.blocked && <p className="text-amber-300 text-xs">{token.blocked}</p>}
                   </div>
                 </div>
               </div>
@@ -693,7 +690,7 @@ const signature = await connection.sendRawTransaction(
           </>
         ) : (
           <div className="text-center py-8">
-            <p className="text-red-400/60">No tokens found in your wallet</p>
+            <p className="text-red-400/60">{fetchError ?? 'No tokens found in your wallet'}</p>
           </div>
         )
       ) : (
