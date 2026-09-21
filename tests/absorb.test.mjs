@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { ComputeBudgetProgram, ComputeBudgetInstruction, Keypair, PublicKey, SystemProgram, SystemInstruction, Transaction, VersionedTransaction } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, AccountLayout, AccountState } from '@solana/spl-token'
-import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, rentTotals, estimatedRentLabel, selectRentBatch, assertUnchanged, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery } from '../lib/absorb.ts'
+import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, rentTotals, estimatedRentLabel, selectRentBatch, assertUnchanged, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery, recoveryMessageDifference } from '../lib/absorb.ts'
 
 const signer = Keypair.fromSeed(Uint8Array.from({ length: 32 }, (_, index) => index + 1))
 const user = signer.publicKey
@@ -188,6 +188,41 @@ test('wallet mutation, simulation rejection and wallet switches never broadcast'
     preview.transaction.sign(signer)
     if (mode === 'simulation') rpc.simulateTransaction = async () => ({ value: { err: { InstructionError: [0, 'Custom'] } } })
     await assert.rejects(submitRentRecovery(rpc, preview.transaction, preview, () => mode !== 'switch', () => {}))
+    assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
+  }
+})
+
+test('recovery comparison accepts identical plain byte arrays without trusting wallet Buffer.equals', async () => {
+  const rpc = mockConnection(), preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+  const sameBytes = Uint8Array.from(preview.expectedMessage)
+  assert.equal(recoveryMessageDifference(preview.expectedMessage, sameBytes), undefined)
+  preview.transaction.sign(signer)
+  const serializeMessage = preview.transaction.serializeMessage.bind(preview.transaction)
+  preview.transaction.serializeMessage = () => {
+    const bytes = serializeMessage()
+    bytes.equals = () => { throw new Error('Must not use the wallet Buffer comparison') }
+    return bytes
+  }
+  await submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {})
+  assert.equal(rpc.calls.filter(([type]) => type === 'send').length, 1)
+})
+
+test('recovery mismatch diagnostics identify changes without broadcasting or exposing addresses', async () => {
+  for (const [change, reason] of [
+    [tx => { tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 }) }, 'compute-budget instructions changed'],
+    [tx => { tx.recentBlockhash = address.toBase58() }, 'blockhash changed'],
+    [tx => { tx.instructions.at(-1).data[4] ^= 1 }, 'instruction 3 data changed'],
+    [tx => { tx.instructions.push(tx.instructions[1]) }, 'instruction count changed (3 to 4)'],
+  ]) {
+    const rpc = mockConnection(), preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+    change(preview.transaction)
+    preview.transaction.sign(signer)
+    assert.equal(recoveryMessageDifference(preview.expectedMessage, preview.transaction.serializeMessage()), reason)
+    await assert.rejects(submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {}), error => {
+      assert.ok(error.message.includes(`Recovery check v2: ${reason}`))
+      assert.ok(!error.message.includes(user.toBase58()))
+      return true
+    })
     assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
   }
 })

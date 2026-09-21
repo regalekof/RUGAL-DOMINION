@@ -1,5 +1,5 @@
 import { Buffer } from 'buffer'
-import { ComputeBudgetProgram, PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
+import { ComputeBudgetProgram, Message, PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
 import type { AccountInfo, Connection } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ExtensionType, getExtensionTypes, getTransferFeeAmount, unpackAccount, createCloseAccountInstruction } from '@solana/spl-token'
 
@@ -182,9 +182,36 @@ export async function prepareRentRecovery(connection: Connection, user: PublicKe
 
 export type RentPreview = Awaited<ReturnType<typeof prepareRentRecovery>>
 
+// Compare byte values rather than relying on a wallet's Buffer implementation.
+// Diagnostics deliberately contain no wallet addresses, signatures or RPC URLs.
+export function recoveryMessageDifference(expected: Uint8Array, actual: Uint8Array): string | undefined {
+  if (expected.length === actual.length && expected.every((byte, index) => byte === actual[index])) return
+  try {
+    const before = Message.from(expected), after = Message.from(actual)
+    if (!before.accountKeys[0].equals(after.accountKeys[0])) return 'fee payer changed'
+    if (before.recentBlockhash !== after.recentBlockhash) return 'blockhash changed'
+    const budget = (message: Message) => message.instructions.filter(ix => message.accountKeys[ix.programIdIndex].equals(ComputeBudgetProgram.programId)).map(ix => ix.data)
+    if (JSON.stringify(budget(before)) !== JSON.stringify(budget(after))) return 'compute-budget instructions changed'
+    if (before.instructions.length !== after.instructions.length) return `instruction count changed (${before.instructions.length} to ${after.instructions.length})`
+    if (JSON.stringify(before.header) !== JSON.stringify(after.header)) return 'signer or account permissions changed'
+    if (before.accountKeys.length !== after.accountKeys.length) return 'account list changed'
+    for (let index = 0; index < before.instructions.length; index++) {
+      const a = before.instructions[index], b = after.instructions[index]
+      if (!before.accountKeys[a.programIdIndex].equals(after.accountKeys[b.programIdIndex])) return `instruction ${index + 1} program changed`
+      if (a.data !== b.data) return `instruction ${index + 1} data changed`
+      if (a.accounts.length !== b.accounts.length || a.accounts.some((key, i) => !before.accountKeys[key].equals(after.accountKeys[b.accounts[i]]))) return `instruction ${index + 1} accounts changed`
+    }
+    // Even apparent reordering is rejected until the cause has been verified.
+    return 'account ordering or message encoding changed'
+  } catch {
+    return 'unrecognized message encoding'
+  }
+}
+
 export async function submitRentRecovery(connection: Connection, signed: Transaction, preview: RentPreview, stillCurrent: () => boolean, onSent: (signature: string) => void) {
   if (!stillCurrent()) throw new Error('Wallet or network changed; transaction not sent.')
-  if (!signed.serializeMessage().equals(preview.expectedMessage)) throw new Error('The wallet changed the transaction; review again.')
+  const difference = recoveryMessageDifference(preview.expectedMessage, signed.serializeMessage())
+  if (difference) throw new Error(`The wallet changed the transaction; review again. [Recovery check v2: ${difference}]. Nothing was sent.`)
   // A wallet prompt can stay open for minutes. Recheck after approval as well.
   const fresh = await scanRecoveryRent(connection, preview.user, preview.kind)
   assertUnchanged(preview.selected, fresh)
