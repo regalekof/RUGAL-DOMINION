@@ -113,13 +113,14 @@ export default function AbsorbPage() {
         if (isCurrent()) { setReceipt({ signature, kind: review.kind, confirmed: false }); setReview(null) }
       })
       if (isCurrent()) setReceipt({ signature, kind: review.kind, confirmed: true })
-      // Optional leaderboard failures must not change the confirmed on-chain result.
-      try {
+      // Keep optional leaderboard writes sequential, but do not block the
+      // confirmed receipt, balance refresh, or next recovery batch on them.
+      void (async () => { try {
         const referral = localStorage.getItem('referral_code') || undefined
         for (let i = 0; i < review.accounts.length; i++) {
           await addLeaderboardPoints(wallet, 'absorb', i === 0 ? fresh.fee / LAMPORTS_PER_SOL : 0, referral)
         }
-      } catch { /* Optional leaderboard does not affect recovery. */ }
+      } catch { /* Optional leaderboard does not affect recovery. */ } })()
       if (isCurrent()) await refresh()
     } catch (err) {
       if (isCurrent()) {

@@ -41,6 +41,17 @@ export function estimatedRentLabel(count: number) {
   return (count * 0.0015).toFixed(4)
 }
 
+// One bounded retry for transport failures on idempotent reads only. Never wrap
+// signing/submission: a failed send response does not prove nothing was sent.
+export async function retryRecoveryRead<T>(read: () => Promise<T>): Promise<T> {
+  try { return await read() } catch (error) {
+    const message = error instanceof Error ? error.message : ''
+    if (!/failed to fetch|fetch failed|networkerror|network request failed|ECONNRESET|ETIMEDOUT/i.test(message)) throw error
+    await new Promise(resolve => setTimeout(resolve, 300))
+    return read()
+  }
+}
+
 export function tokenRentAccount(address: PublicKey, info: AccountInfo<Buffer>, user: PublicKey): RentAccount | null {
   if (!TOKEN_PROGRAMS.some(program => program.equals(info.owner))) return null
   const account = unpackAccount(address, info, info.owner)
@@ -74,7 +85,7 @@ export function pumpBlockReason(info: AccountInfo<Buffer>, user: PublicKey, prog
 }
 
 export async function scanTokenRent(connection: Connection, user: PublicKey): Promise<RentAccount[]> {
-  const results = await Promise.all(TOKEN_PROGRAMS.map(programId => connection.getTokenAccountsByOwner(user, { programId }, 'confirmed')))
+  const results = await Promise.all(TOKEN_PROGRAMS.map(programId => retryRecoveryRead(() => connection.getTokenAccountsByOwner(user, { programId }, 'confirmed'))))
   return results.flatMap(result => result.value.flatMap(({ pubkey, account }) => {
     const item = tokenRentAccount(pubkey, account, user)
     return item ? [item] : []
@@ -83,8 +94,8 @@ export async function scanTokenRent(connection: Connection, user: PublicKey): Pr
 
 export async function scanPumpRent(connection: Connection, user: PublicKey): Promise<RentAccount[]> {
   const addresses = PUMP_PROGRAMS.map(({ id }) => pumpAddress(user, id))
-  const infos = await connection.getMultipleAccountsInfo(addresses, 'confirmed')
-  const rent = infos.some(Boolean) ? await connection.getMinimumBalanceForRentExemption(137, 'confirmed') : 0
+  const infos = await retryRecoveryRead(() => connection.getMultipleAccountsInfo(addresses, 'confirmed'))
+  const rent = infos.some(Boolean) ? await retryRecoveryRead(() => connection.getMinimumBalanceForRentExemption(137, 'confirmed')) : 0
   const rows = await Promise.all(infos.map(async (info, index) => {
     if (!info) return null
     const { id, label } = PUMP_PROGRAMS[index]
@@ -92,7 +103,7 @@ export async function scanPumpRent(connection: Connection, user: PublicKey): Pro
     if (!blocked) {
       // PumpSwap rewards live in PDA-owned token accounts. Check both token programs;
       // never close reward vaults as part of a rent-only action.
-      const vaults = await Promise.all(TOKEN_PROGRAMS.map(programId => connection.getTokenAccountsByOwner(addresses[index], { programId }, 'confirmed')))
+      const vaults = await Promise.all(TOKEN_PROGRAMS.map(programId => retryRecoveryRead(() => connection.getTokenAccountsByOwner(addresses[index], { programId }, 'confirmed'))))
       const hasFunds = vaults.some(result => result.value.some(({ pubkey, account }) => {
         const vault = unpackAccount(pubkey, account, account.owner)
         return vault.amount !== BigInt(0) || getExtensionTypes(vault.tlvData).length > 0 ||
@@ -119,10 +130,25 @@ export function selectRentBatch(accounts: RentAccount[]) {
     .slice(0, MAX_RENT_ACCOUNTS)
 }
 
-async function scanRecoveryRent(connection: Connection, user: PublicKey, kind: RecoveryKind) {
-  if (kind === 'token') return scanTokenRent(connection, user)
-  if (kind === 'pump') return scanPumpRent(connection, user)
-  const [tokens, pump] = await Promise.all([scanTokenRent(connection, user), scanPumpRent(connection, user)])
+async function scanRecoveryRent(connection: Connection, user: PublicKey, kind: RecoveryKind, selected: RentAccount[]) {
+  assertUnchanged(selected, selected)
+  if (selected.some(account => kind !== 'both' && accountRentKind(account) !== kind)) throw new Error('Invalid recovery selection.')
+  const tokenRows = selected.filter(account => accountRentKind(account) === 'token')
+  // Fetch the at-most-ten selected accounts in one request. Never cache this:
+  // all raw ownership, balance, close-authority and extension checks still run.
+  const readTokens = async () => {
+    if (!tokenRows.length) return []
+    const infos = await retryRecoveryRead(() => connection.getMultipleAccountsInfo(tokenRows.map(row => new PublicKey(row.address)), 'confirmed'))
+    return infos.flatMap((info, index) => {
+      if (!info) return []
+      const row = tokenRentAccount(new PublicKey(tokenRows[index].address), info, user)
+      return row ? [row] : []
+    })
+  }
+  const [tokens, pump] = await Promise.all([
+    readTokens(),
+    selected.some(account => accountRentKind(account) === 'pump') ? scanPumpRent(connection, user) : Promise.resolve([]),
+  ])
   return [...tokens, ...pump]
 }
 
@@ -157,10 +183,10 @@ export function assertUnchanged(selected: RentAccount[], fresh: RentAccount[]) {
 }
 
 export async function prepareRentRecovery(connection: Connection, user: PublicKey, kind: RecoveryKind, selected: RentAccount[]) {
-  const fresh = await scanRecoveryRent(connection, user, kind)
+  const fresh = await scanRecoveryRent(connection, user, kind, selected)
   assertUnchanged(selected, fresh)
   const totals = rentTotals(selected)
-  const latest = await connection.getLatestBlockhash('confirmed')
+  const latest = await retryRecoveryRead(() => connection.getLatestBlockhash('confirmed'))
   const transaction = new Transaction({ feePayer: user, ...latest })
   // Declare the price before estimating, simulating and asking for a signature.
   // Phantom otherwise injects priority instructions at signing, invalidating our
@@ -174,9 +200,13 @@ export async function prepareRentRecovery(connection: Connection, user: PublicKe
   if (totals.fee > 0) transaction.add(SystemProgram.transfer({ fromPubkey: user, toPubkey: FEE_WALLET, lamports: totals.fee }))
   if (transaction.serialize({ requireAllSignatures: false, verifySignatures: false }).length > 1232) throw new Error('This selection is too large for one transaction. Select fewer accounts.')
   const message = transaction.compileMessage()
-  const networkFee = (await connection.getFeeForMessage(message, 'confirmed')).value
+  const [feeEstimate, balance] = await Promise.all([
+    retryRecoveryRead(() => connection.getFeeForMessage(message, 'confirmed')),
+    retryRecoveryRead(() => connection.getBalance(user, 'confirmed')),
+  ])
+  const networkFee = feeEstimate.value
   if (networkFee === null) throw new Error('Could not estimate the network fee. Try again.')
-  if (await connection.getBalance(user, 'confirmed') < networkFee) throw new Error('You need enough SOL in your wallet to pay the network fee before rent is returned.')
+  if (balance < networkFee) throw new Error('You need enough SOL in your wallet to pay the network fee before rent is returned.')
   if (totals.net <= networkFee) throw new Error('Network fees would exceed the rent recovered.')
   // Wrap legacy messages to avoid the legacy simulateTransaction overload, which
   // can replace the blockhash of a signed transaction.
@@ -255,7 +285,7 @@ export async function submitRentRecovery(connection: Connection, signed: Transac
   const difference = recoveryMessageDifference(preview.expectedMessage, signed.serializeMessage())
   if (difference) throw new Error(`The wallet changed the transaction; review again. [Recovery check v3: ${difference}]. Nothing was sent.`)
   // A wallet prompt can stay open for minutes. Recheck after approval as well.
-  const fresh = await scanRecoveryRent(connection, preview.user, preview.kind)
+  const fresh = await scanRecoveryRent(connection, preview.user, preview.kind, preview.selected)
   assertUnchanged(preview.selected, fresh)
   const bytes = signed.serialize()
   const simulation = await connection.simulateTransaction(VersionedTransaction.deserialize(bytes), { sigVerify: true, commitment: 'confirmed' })

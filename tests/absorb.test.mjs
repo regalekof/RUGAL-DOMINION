@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { ComputeBudgetProgram, ComputeBudgetInstruction, Keypair, PublicKey, SystemProgram, SystemInstruction, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, AccountLayout, AccountState } from '@solana/spl-token'
-import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, LIGHTHOUSE_PROGRAM_ID, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, rentTotals, estimatedRentLabel, selectRentBatch, assertUnchanged, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery, recoveryMessageDifference } from '../lib/absorb.ts'
+import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, LIGHTHOUSE_PROGRAM_ID, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, rentTotals, estimatedRentLabel, selectRentBatch, assertUnchanged, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery, recoveryMessageDifference, retryRecoveryRead } from '../lib/absorb.ts'
 
 const signer = Keypair.fromSeed(Uint8Array.from({ length: 32 }, (_, index) => index + 1))
 const user = signer.publicKey
@@ -108,6 +108,7 @@ function mockConnection() {
   return {
     calls,
     getTokenAccountsByOwner: async (_owner, { programId }) => ({ value: programId.equals(TOKEN_PROGRAM_ID) ? [{ pubkey: address, account: tokenInfo() }] : [] }),
+    getMultipleAccountsInfo: async keys => keys.map(key => key.equals(address) ? tokenInfo() : null),
     getLatestBlockhash: async () => ({ blockhash: other.toBase58(), lastValidBlockHeight: 100 }),
     getFeeForMessage: async () => ({ value: 5000 }),
     getBalance: async () => 5000,
@@ -238,7 +239,8 @@ function lighthouseGuard(target = user) {
 
 test('two Phantom Lighthouse assertions may augment four recovery instructions; exact signed bytes are sent', async () => {
   const rpc = mixedConnection(1)
-  rpc.getMultipleAccountsInfo = async () => [pumpInfo(), null]
+  const readAccounts = rpc.getMultipleAccountsInfo
+  rpc.getMultipleAccountsInfo = async keys => keys[0].equals(pumpAddress(user, PUMP_PROGRAMS[0].id)) ? [pumpInfo(), null] : readAccounts(keys)
   const rows = [...await scanTokenRent(rpc, user), ...await scanPumpRent(rpc, user)]
   const preview = await prepareRentRecovery(rpc, user, 'both', rows)
   assert.equal(preview.transaction.instructions.length, 4)
@@ -320,7 +322,7 @@ test('on-chain errors and confirmation timeouts never report success; sent signa
 test('account changes during wallet approval are rejected before submission', async () => {
   const rpc = mockConnection(), preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
   preview.transaction.sign(signer)
-  rpc.getTokenAccountsByOwner = async () => ({ value: [] })
+  rpc.getMultipleAccountsInfo = async keys => keys.map(() => null)
   await assert.rejects(submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {}), /changed/)
   assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
 })
@@ -364,7 +366,10 @@ function mixedConnection(count = 2) {
     account: tokenInfo(index % 2 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID),
   }))
   rpc.getTokenAccountsByOwner = async (owner, { programId }) => ({ value: owner.equals(user) ? tokens.filter(row => row.account.owner.equals(programId)) : [] })
-  rpc.getMultipleAccountsInfo = async () => PUMP_PROGRAMS.map(({ id }) => pumpInfo(id))
+  rpc.getMultipleAccountsInfo = async keys => keys.map(key => {
+    const pump = PUMP_PROGRAMS.find(({ id }) => pumpAddress(user, id).equals(key))
+    return pump ? pumpInfo(pump.id) : tokens.find(row => row.pubkey.equals(key))?.account ?? null
+  })
   rpc.getMinimumBalanceForRentExemption = async () => rent
   return rpc
 }
@@ -407,4 +412,84 @@ test('combined recovery never broadcasts when a Pump account changes after signi
   rpc.getMultipleAccountsInfo = async () => [null, null]
   await assert.rejects(submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {}), /changed/)
   assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
+})
+
+test('recovery revalidates only selected token accounts with one batched read per check', async () => {
+  const rpc = mixedConnection(20)
+  const selected = (await scanTokenRent(rpc, user)).slice(0, 3)
+  let reads = 0
+  const readAccounts = rpc.getMultipleAccountsInfo
+  rpc.getMultipleAccountsInfo = async keys => {
+    reads++
+    assert.deepEqual(keys.map(key => key.toBase58()), selected.map(row => row.address))
+    return readAccounts(keys)
+  }
+  rpc.getTokenAccountsByOwner = async () => { throw new Error('Must not rescan the whole wallet') }
+  const preview = await prepareRentRecovery(rpc, user, 'token', selected)
+  assert.equal(reads, 1)
+  preview.transaction.sign(signer)
+  await submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {})
+  assert.equal(reads, 2, 'post-signing state is always reread, never cached')
+})
+
+test('selected-account checks still reject changed balance, owner, authority and extensions', async () => {
+  for (const info of [
+    tokenInfo(TOKEN_PROGRAM_ID, { amount: 1n }),
+    tokenInfo(TOKEN_PROGRAM_ID, { owner: other }),
+    tokenInfo(TOKEN_PROGRAM_ID, { closeAuthorityOption: 1, closeAuthority: other }),
+    { ...tokenInfo(), lamports: 1 },
+    { ...tokenInfo(), owner: SystemProgram.programId },
+  ]) {
+    const rpc = mockConnection()
+    const preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+    preview.transaction.sign(signer)
+    rpc.getMultipleAccountsInfo = async () => [info]
+    await assert.rejects(submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {}), /changed/)
+    assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
+  }
+})
+
+test('temporary read failures get one retry; persistent failures and validation errors stop', async () => {
+  let attempts = 0
+  assert.equal(await retryRecoveryRead(async () => {
+    if (++attempts === 1) throw new TypeError('Failed to fetch')
+    return 'recovered'
+  }), 'recovered')
+  assert.equal(attempts, 2)
+  attempts = 0
+  await assert.rejects(retryRecoveryRead(async () => { attempts++; throw new TypeError('Failed to fetch') }), /Failed to fetch/)
+  assert.equal(attempts, 2)
+  for (const message of ['401 Unauthorized', 'Invalid account', '403 Forbidden']) {
+    attempts = 0
+    await assert.rejects(retryRecoveryRead(async () => { attempts++; throw new Error(message) }))
+    assert.equal(attempts, 1)
+  }
+})
+
+test('scan transport recovery retries only the failed request and never retries a send', async () => {
+  const rpc = mockConnection()
+  let reads = 0
+  rpc.getMultipleAccountsInfo = async () => {
+    if (++reads === 1) throw new TypeError('Failed to fetch')
+    return [tokenInfo()]
+  }
+  const preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+  assert.equal(reads, 2)
+  preview.transaction.sign(signer)
+  let sends = 0
+  rpc.sendRawTransaction = async () => { sends++; throw new TypeError('Failed to fetch') }
+  await assert.rejects(submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {}), /Failed to fetch/)
+  assert.equal(sends, 1)
+})
+
+test('fee and balance reads run concurrently without skipping the balance check', async () => {
+  const rpc = mockConnection()
+  let balanceStarted = false
+  rpc.getFeeForMessage = async () => {
+    await Promise.resolve()
+    assert.ok(balanceStarted)
+    return { value: 5000 }
+  }
+  rpc.getBalance = async () => { balanceStarted = true; return 4999 }
+  await assert.rejects(prepareRentRecovery(rpc, user, 'token', [tokenRow()]), /network fee/)
 })
