@@ -182,11 +182,47 @@ export function assertUnchanged(selected: RentAccount[], fresh: RentAccount[]) {
   }
 }
 
+class RecoveryBlockhashError extends Error {
+  constructor() {
+    super('The RPC could not validate the transaction blockhash (it may have expired or the RPC may be behind). Nothing was sent. Approve again to rebuild with a fresh blockhash and sign again.')
+    this.name = 'RecoveryBlockhashError'
+  }
+}
+
+async function simulateRecovery(connection: Connection, transaction: VersionedTransaction, minContextSlot: number, signed: boolean) {
+  // After signing, retry an unavailable blockhash once with IDENTICAL bytes to
+  // tolerate a lagging backend. Never replace a blockhash in a signed message.
+  const attempts = signed ? 2 : 1
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const result = await connection.simulateTransaction(transaction, {
+        sigVerify: signed, replaceRecentBlockhash: false, commitment: 'confirmed', minContextSlot,
+      })
+      if (result.value.err !== 'BlockhashNotFound') return result
+    } catch (error) {
+      if (!(error instanceof Error) || !/minimum context slot|blockhash not found|BlockhashNotFound/i.test(error.message)) throw error
+    }
+    if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, 400))
+  }
+  throw new RecoveryBlockhashError()
+}
+
 export async function prepareRentRecovery(connection: Connection, user: PublicKey, kind: RecoveryKind, selected: RentAccount[]) {
+  // Only unsigned preparation may rebuild automatically, once. All account
+  // checks, fee estimates and simulation run again on the new transaction.
+  try { return await prepareRentRecoveryOnce(connection, user, kind, selected) } catch (error) {
+    if (!(error instanceof RecoveryBlockhashError)) throw error
+    return prepareRentRecoveryOnce(connection, user, kind, selected)
+  }
+}
+
+async function prepareRentRecoveryOnce(connection: Connection, user: PublicKey, kind: RecoveryKind, selected: RentAccount[]) {
   const fresh = await scanRecoveryRent(connection, user, kind, selected)
   assertUnchanged(selected, fresh)
   const totals = rentTotals(selected)
-  const latest = await retryRecoveryRead(() => connection.getLatestBlockhash('confirmed'))
+  const blockhashResponse = await retryRecoveryRead(() => connection.getLatestBlockhashAndContext('confirmed'))
+  const latest = blockhashResponse.value
+  const minContextSlot = blockhashResponse.context.slot
   const transaction = new Transaction({ feePayer: user, ...latest })
   // Declare the price before estimating, simulating and asking for a signature.
   // Phantom otherwise injects priority instructions at signing, invalidating our
@@ -205,14 +241,14 @@ export async function prepareRentRecovery(connection: Connection, user: PublicKe
     retryRecoveryRead(() => connection.getBalance(user, 'confirmed')),
   ])
   const networkFee = feeEstimate.value
-  if (networkFee === null) throw new Error('Could not estimate the network fee. Try again.')
+  if (networkFee === null) throw new RecoveryBlockhashError()
   if (balance < networkFee) throw new Error('You need enough SOL in your wallet to pay the network fee before rent is returned.')
   if (totals.net <= networkFee) throw new Error('Network fees would exceed the rent recovered.')
   // Wrap legacy messages to avoid the legacy simulateTransaction overload, which
   // can replace the blockhash of a signed transaction.
-  const simulation = await connection.simulateTransaction(new VersionedTransaction(message), { sigVerify: false, commitment: 'confirmed' })
+  const simulation = await simulateRecovery(connection, new VersionedTransaction(message), minContextSlot, false)
   if (simulation.value.err) throw new Error(`Recovery simulation failed: ${JSON.stringify(simulation.value.err)}. Nothing was sent.`)
-  return { transaction, expectedMessage: transaction.serializeMessage(), latest, networkFee, kind, user, selected: selected.map(account => ({ ...account })), ...totals }
+  return { transaction, expectedMessage: transaction.serializeMessage(), latest, minContextSlot, networkFee, kind, user, selected: selected.map(account => ({ ...account })), ...totals }
 }
 
 export type RentPreview = Awaited<ReturnType<typeof prepareRentRecovery>>
@@ -288,10 +324,10 @@ export async function submitRentRecovery(connection: Connection, signed: Transac
   const fresh = await scanRecoveryRent(connection, preview.user, preview.kind, preview.selected)
   assertUnchanged(preview.selected, fresh)
   const bytes = signed.serialize()
-  const simulation = await connection.simulateTransaction(VersionedTransaction.deserialize(bytes), { sigVerify: true, commitment: 'confirmed' })
+  const simulation = await simulateRecovery(connection, VersionedTransaction.deserialize(bytes), preview.minContextSlot, true)
   if (simulation.value.err) throw new Error(`Recovery simulation failed: ${JSON.stringify(simulation.value.err)}. Nothing was sent.`)
   if (!stillCurrent()) throw new Error('Wallet or network changed; transaction not sent.')
-  const signature = await connection.sendRawTransaction(bytes, { skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 3 })
+  const signature = await connection.sendRawTransaction(bytes, { skipPreflight: false, preflightCommitment: 'confirmed', minContextSlot: preview.minContextSlot, maxRetries: 3 })
   onSent(signature)
   const confirmation = await connection.confirmTransaction({ signature, ...preview.latest }, 'confirmed')
   if (confirmation.value.err) throw new Error(`Transaction failed on-chain: ${JSON.stringify(confirmation.value.err)}`)

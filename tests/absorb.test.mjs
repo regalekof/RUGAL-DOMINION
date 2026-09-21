@@ -109,7 +109,7 @@ function mockConnection() {
     calls,
     getTokenAccountsByOwner: async (_owner, { programId }) => ({ value: programId.equals(TOKEN_PROGRAM_ID) ? [{ pubkey: address, account: tokenInfo() }] : [] }),
     getMultipleAccountsInfo: async keys => keys.map(key => key.equals(address) ? tokenInfo() : null),
-    getLatestBlockhash: async () => ({ blockhash: other.toBase58(), lastValidBlockHeight: 100 }),
+    getLatestBlockhashAndContext: async () => ({ context: { slot: 80 }, value: { blockhash: other.toBase58(), lastValidBlockHeight: 100 } }),
     getFeeForMessage: async () => ({ value: 5000 }),
     getBalance: async () => 5000,
     simulateTransaction: async (transaction, config) => { assert.ok(transaction instanceof VersionedTransaction); calls.push(['simulate', config]); return { value: { err: null } } },
@@ -492,4 +492,93 @@ test('fee and balance reads run concurrently without skipping the balance check'
   }
   rpc.getBalance = async () => { balanceStarted = true; return 4999 }
   await assert.rejects(prepareRentRecovery(rpc, user, 'token', [tokenRow()]), /network fee/)
+})
+
+test('unsigned BlockhashNotFound rebuilds once with a fresh blockhash, slot and message snapshot', async () => {
+  const rpc = mockConnection()
+  let blockhashReads = 0, simulations = 0, accountReads = 0
+  rpc.getLatestBlockhashAndContext = async () => ({
+    context: { slot: ++blockhashReads === 1 ? 80 : 81 },
+    value: { blockhash: blockhashReads === 1 ? other.toBase58() : address.toBase58(), lastValidBlockHeight: 100 + blockhashReads },
+  })
+  rpc.getMultipleAccountsInfo = async () => { accountReads++; return [tokenInfo()] }
+  rpc.simulateTransaction = async (tx, config) => {
+    assert.equal(config.sigVerify, false)
+    assert.equal(config.replaceRecentBlockhash, false)
+    assert.equal(config.minContextSlot, 80 + simulations)
+    return { value: { err: ++simulations === 1 ? 'BlockhashNotFound' : null } }
+  }
+  const preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+  assert.equal(blockhashReads, 2); assert.equal(accountReads, 2)
+  assert.equal(preview.latest.blockhash, address.toBase58())
+  assert.equal(preview.latest.lastValidBlockHeight, 102)
+  assert.equal(preview.minContextSlot, 81)
+  assert.deepEqual(preview.expectedMessage, preview.transaction.serializeMessage())
+})
+
+test('unsigned blockhash refresh is bounded and reruns selection safety checks', async () => {
+  const rpc = mockConnection()
+  let simulations = 0
+  rpc.simulateTransaction = async () => { simulations++; return { value: { err: 'BlockhashNotFound' } } }
+  await assert.rejects(prepareRentRecovery(rpc, user, 'token', [tokenRow()]), /fresh blockhash/)
+  assert.equal(simulations, 2)
+  let reads = 0
+  rpc.getMultipleAccountsInfo = async () => ++reads === 1 ? [tokenInfo()] : [null]
+  await assert.rejects(prepareRentRecovery(rpc, user, 'token', [tokenRow()]), /account changed/)
+  assert.equal(reads, 2)
+})
+
+test('signed blockhash lag retries identical bytes once with slot constraint and preserves confirmation metadata', async () => {
+  for (const contextError of [false, true]) {
+    const rpc = mockConnection(), preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+    preview.transaction.sign(signer)
+    const bytes = preview.transaction.serialize()
+    let attempts = 0
+    rpc.getLatestBlockhashAndContext = async () => { throw new Error('Must not rebuild a signed transaction') }
+    rpc.simulateTransaction = async (tx, config) => {
+      assert.deepEqual(Buffer.from(tx.serialize()), bytes)
+      assert.equal(config.minContextSlot, preview.minContextSlot)
+      assert.equal(config.replaceRecentBlockhash, false)
+      assert.equal(config.sigVerify, true)
+      if (++attempts === 1) {
+        if (contextError) throw new Error('Minimum context slot has not been reached')
+        return { value: { err: 'BlockhashNotFound' } }
+      }
+      return { value: { err: null } }
+    }
+    rpc.confirmTransaction = async config => {
+      assert.equal(config.blockhash, preview.latest.blockhash)
+      assert.equal(config.lastValidBlockHeight, preview.latest.lastValidBlockHeight)
+      return { value: { err: null } }
+    }
+    await submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {})
+    assert.equal(attempts, 2)
+    const send = rpc.calls.find(([type]) => type === 'send')
+    assert.deepEqual(send[1], bytes)
+    assert.equal(send[2].minContextSlot, preview.minContextSlot)
+  }
+})
+
+test('persistently unavailable signed blockhash asks for reapproval without sending or changing the signature', async () => {
+  const rpc = mockConnection(), preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+  preview.transaction.sign(signer)
+  const bytes = preview.transaction.serialize()
+  let attempts = 0
+  rpc.simulateTransaction = async () => { attempts++; return { value: { err: 'BlockhashNotFound' } } }
+  await assert.rejects(submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {}), /Nothing was sent.*sign again/)
+  assert.equal(attempts, 2)
+  assert.deepEqual(preview.transaction.serialize(), bytes)
+  assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
+})
+
+test('wallet change during a blockhash-lag retry never broadcasts', async () => {
+  const rpc = mockConnection(), preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+  preview.transaction.sign(signer)
+  let current = true, attempts = 0
+  rpc.simulateTransaction = async () => {
+    current = false
+    return { value: { err: ++attempts === 1 ? 'BlockhashNotFound' : null } }
+  }
+  await assert.rejects(submitRentRecovery(rpc, preview.transaction, preview, () => current, () => {}), /Wallet or network changed/)
+  assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
 })
