@@ -1,47 +1,126 @@
 # Rugal's Dominion
 
-Next.js application for Solana token burning and closing empty token accounts.
+A Solana wallet-cleanup app with a King of Fighters-inspired red-and-purple theme. Burn unwanted tokens, manage supported NFTs, and recover rent from eligible unused accounts through **Omega Absorption**.
 
-## Local setup
+## Features
 
-Run commands in the directory containing `package.json`.
+### Token & NFT Burning
 
-1. Install dependencies with `pnpm install --frozen-lockfile`.
-2. Create `.env.local` using `.env.example` and set your Helius API key.
-3. Set `NEXT_PUBLIC_SOLANA_NETWORK=mainnet-beta` for mainnet or `devnet` for testing. This setting is a cluster name, not a URL.
-4. Run `pnpm dev` and open http://localhost:3000.
+- Connect through Phantom or Solflare.
+- Browse supported wallet assets and select items to burn.
+- Use Select All or clear your selection.
+- USDC and USDT are hidden from the token-burn list and blocked from burn transaction construction using their official mainnet mint addresses.
+- Open submitted transactions in Solscan.
 
-Restart the development server after editing `.env.local`. For production, rebuild after changing `NEXT_PUBLIC_*` variables because Next.js embeds them in the browser bundle.
+The current burn components use the original SPL Token Program. Token-2022 support below applies to Absorb, not to the burn components. NFT support is limited to the implemented legacy-token flow; do not assume support for compressed or programmable NFTs.
 
-## Helius
+### Omega Absorption
 
-The app constructs matching HTTP and standard WebSocket endpoints from `NEXT_PUBLIC_HELIUS_API_KEY`. This browser key is visible in network requests; `.env.local` keeps it out of source control, not out of the browser. Remove obsolete QuickNode variables from deployment settings.
+Choose either card or select both:
 
-Without a key, the app uses the public Solana RPC. A configured key that expires or becomes rate limited does not automatically switch providers.
+- **Accounts** — recover rent from eligible empty SPL Token and Token-2022 accounts.
+- **Pump Reward** — recover rent from eligible Pump.fun and PumpSwap user volume accounts. Despite its name, this is account-rent recovery, not a cashback or trading-reward claim.
 
-## Optional database
+Both categories can be recovered together in **one transaction per batch**, with one wallet signature. Each batch contains up to **10 accounts**. Eligible Pump accounts are prioritised when both categories are selected; additional token accounts remain available for another batch.
 
-Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` to enable the existing shared leaderboard/profile integration. Without them, the UI uses its local-storage fallback and `/api/leaderboard` returns HTTP 503. Local-only records are not shared between browsers.
+The cards display a simplified estimate of `0.0015 SOL × eligible account count`. This is a display estimate only. Transaction calculations use each account's actual on-chain balance.
 
-## Checks
+### Community & Interface
 
-- `pnpm exec tsc --noEmit` checks TypeScript.
-- `pnpm test:absorb` runs offline rent-recovery tests (Node 22.6+).
-- `pnpm build` builds production assets and validates types.
-- `pnpm start` serves the production build.
+- Leaderboard, profile, and referral interfaces.
+- Optional Supabase integration for shared records, with a local-storage fallback.
+- Custom artwork, multi-select recovery cards, responsive layouts, and reduced-motion support in Absorb.
+- Shared Helius connection with configurable mainnet or devnet access.
 
-The live RPC health check is read-only. Burning tokens and closing accounts require wallet approval and have not been exercised by the build checks.
+## Safety Checks
 
-## Absorb: rent recovery
+### Burn Protection
 
-The **Accounts** and **Pump Reward** cards can be selected individually or together. Their simplified display is an explicitly labelled estimate of `0.0015 SOL × eligible account count` for either type. Transaction calculations always use actual account balances, not the display estimate.
+- USDC and USDT protection is based on mint addresses, not editable token names or symbols.
+- Protected mints are filtered before metadata loading, excluded from selection, and checked again before constructing burn instructions.
+- Wallet approval is required to sign a transaction. The app does not require users to enter a seed phrase or private key.
 
-Selected categories are recovered in one transaction per batch with one wallet signature. Absorb charges **2% of each recovered account's actual lamports**, rounded down per account, and sums these fees into one transfer to `Dkmdvd9iZWKGXiSNExgYYX7PZNncewM4WqHBgN1knUzH` after the closures. The fee transfer is atomic with the closures. Eligible Pump accounts are prioritised in batches of up to 10 accounts; remaining accounts require another reviewed batch. The fee notice and recipient are shown beside the recovery button; the app's final confirmation shows only the account count and approval/cancel controls. Wallet software may independently display transaction details.
+**Burning is irreversible.** Review the assets selected and the transaction shown by your wallet before approving.
 
-- **Token-account rent** scans SPL Token and Token-2022 separately and closes only eligible empty accounts. Native/wrapped SOL, nonzero balances, foreign close authorities, withheld fees, and unreviewed extensions are excluded. The token-burning pages are unchanged.
-- **Pump-account rent** derives the connected wallet's Pump.fun and PumpSwap `user_volume_accumulator` PDAs. It uses each owning program's `close_user_volume_accumulator`, not SPL closure. No cashback/reward claim instructions are implemented.
-- Pump recovery is deliberately conservative: only the verified 137-byte layouts are supported; unknown fields, pending/unsettled reward state, additional SOL, or funded/extended reward vaults block recovery. Resolve these on Pump first. Future trades may recreate an account and require another rent deposit.
-- Transaction calculations use actual account lamports and estimated network fees, never the rounded card display. The service fee is funded from the recovered rent; only the network fee must be funded upfront. Other pages' fee policies are unchanged.
-- The exact reviewed accounts are rechecked before signing. Transactions are simulated using the versioned API (including legacy-message transactions), sent with preflight enabled, and only marked successful after error-free confirmation. A submitted signature remains visible if confirmation is uncertain.
+### Absorb Protection
 
-Program layouts/instructions were checked against the [official Pump IDLs](https://github.com/pump-fun/pump-public-docs/tree/main/idl) on 2026-09-21. Layout changes fail closed and require review. Offline tests use synthetic accounts and mocked RPC, not signed mainnet operations.
+- Only eligible empty token accounts enter rent recovery; nonzero token balances and native/wrapped SOL accounts are excluded.
+- Account ownership, close authority, and supported Token-2022 extensions are checked. Unsupported or unresolved extension state is excluded.
+- Pump accounts are derived for the connected wallet and validated against the supported program owners, account discriminator, and 137-byte layout.
+- Pending rewards, unsettled trading volume, unexpected account fields, extra SOL, and funded or unreviewed reward vaults block Pump rent recovery.
+- The exact reviewed accounts are rechecked before signing and again after wallet approval.
+- Absorb simulates transactions, preserves the signed payload, and submits with preflight enabled. Success is shown only after error-free confirmation.
+- Wallet or connection changes prevent stale recovery submissions. A submitted transaction link remains available when confirmation is uncertain.
+
+These transaction safeguards describe the Absorb implementation; the burn components have a separate transaction flow. Closing a Pump account removes its tracking state, and future trading may recreate it with another rent deposit. Unsupported account layouts require code review before being enabled.
+
+## Local Setup
+
+Use **Node.js 22.14 or later** and **pnpm**. Run commands from the directory containing `package.json`; downloaded ZIP archives may contain an extra nested project folder.
+
+```sh
+pnpm install --frozen-lockfile
+```
+
+Create `.env.local` from `.env.example` and configure:
+
+```dotenv
+NEXT_PUBLIC_HELIUS_API_KEY=your-helius-api-key
+NEXT_PUBLIC_SOLANA_NETWORK=mainnet-beta
+
+# Optional shared leaderboard/profile storage
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+```
+
+Set the network to `mainnet-beta` or `devnet`—not an RPC URL. Then start the app:
+
+```sh
+pnpm dev
+```
+
+Open [localhost:3000](http://localhost:3000). Restart the development server after changing `.env.local`.
+
+### RPC & Environment Safety
+
+The app constructs matching Helius HTTP and WebSocket endpoints. Without a Helius key, it falls back to the public Solana RPC. An invalid or rate-limited configured key does not automatically trigger provider failover.
+
+`NEXT_PUBLIC_*` values are exposed to the browser. Use an appropriately restricted Helius key, never put private keys or Supabase service-role credentials in these variables, and keep `.env.local` out of source control. Production builds must be rebuilt after changing public environment variables.
+
+Supabase is optional. Without it, local records stay in the browser and are not shared across devices; the leaderboard API returns HTTP 503.
+
+## Development Checks
+
+```sh
+# TypeScript
+pnpm exec tsc --noEmit
+
+# Offline Absorb checks
+pnpm test:absorb
+
+# Stablecoin burn-protection checks
+node --experimental-strip-types --test tests/burn-protection.test.mjs
+
+# Production build
+pnpm build
+
+# Serve the production build
+pnpm start
+```
+
+Offline tests use synthetic accounts and mocked RPC responses. They do not sign or submit mainnet transactions and are not a security audit. Successful type checks and builds do not prove that every asset or wallet transaction is supported.
+
+## Project Layout
+
+```text
+app/burn/                  Burn page
+app/absorb/                Omega Absorption UI and styles
+app/config.ts              Solana network and Helius configuration
+app/wallet-provider.tsx    Shared wallet and connection providers
+components/token-burn.tsx  Token-burning interface
+components/nft-burn.tsx    NFT-burning interface
+lib/absorb.ts              Rent scanning, validation, and transactions
+lib/burn-protection.ts     Protected stablecoin mint checks
+public/absorb/             Accounts and Pump Reward artwork
+tests/                    Offline regression tests
+```
