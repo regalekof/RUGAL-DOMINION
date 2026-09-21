@@ -64,29 +64,18 @@
   position: relative;
   display: grid;
   place-items: center;
-  width: 154px;
-  height: 154px;
+  width: 190px;
+  height: 190px;
   margin-bottom: 22px;
-  border: 2px solid var(--orb-color);
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 25%, #4c1b31, #1e0b1c 75%);
   color: var(--orb-color);
-  box-shadow: inset 0 0 25px rgb(255 70 90 / 9%);
-  transition: transform 200ms ease, box-shadow 200ms ease;
+  transition: transform 200ms ease;
 }
 
-.pump .orb {
-  color: #edd5ff;
-  background: radial-gradient(circle at 30% 20%, #7743a1, #35123f 80%);
-}
-
+.artwork { object-fit: contain; filter: drop-shadow(0 0 10px rgb(255 60 90 / 15%)); transition: filter 200ms ease; }
+.pump .artwork { filter: drop-shadow(0 0 10px rgb(165 84 255 / 20%)); }
 .choice:hover .orb { transform: translateY(-4px); }
-.choice[aria-pressed='true'] .orb { box-shadow: 0 0 32px rgb(255 60 90 / 20%), inset 0 0 25px rgb(255 70 90 / 9%); }
-.pump[aria-pressed='true'] .orb { box-shadow: 0 0 32px rgb(165 84 255 / 25%), inset 0 0 25px rgb(180 90 250 / 12%); }
-.accountIcon { width: 96px; height: 96px; }
-.walletIcon { width: 78px; height: 78px; }
-.orbArrow { position: absolute; width: 23px; height: 23px; right: 29px; top: 24px; }
-.pump .orbArrow { right: 26px; top: 23px; }
+.choice[aria-pressed='true'] .artwork { filter: drop-shadow(0 0 15px rgb(255 60 90 / 30%)); }
+.pump[aria-pressed='true'] .artwork { filter: drop-shadow(0 0 15px rgb(165 84 255 / 35%)); }
 
 .selectedMark {
   position: absolute;
@@ -116,13 +105,6 @@
 .count { margin-top: 7px; font-size: 12px; font-weight: 400; color: #b5a3bd; }
 .panel { animation: panel-in 180ms ease-out; }
 .detailsCard { border: 1px solid rgb(220 104 151 / 20%); border-radius: 12px; background: rgb(25 9 32 / 95%); box-shadow: 0 10px 35px rgb(0 0 0 / 15%); }
-.accountDetails { border-top: 1px solid rgb(220 104 151 / 15%); padding-top: 14px; }
-.accountDetails summary { display: flex; align-items: center; cursor: pointer; list-style: none; font-size: 13px; color: #d9c9dd; }
-.accountDetails summary::-webkit-details-marker { display: none; }
-.accountDetails summary > span { margin-left: 4px; color: #d9ad80; }
-.accountDetails summary > svg { margin-left: auto; transition: transform 180ms ease; }
-.accountDetails[open] summary > svg { transform: rotate(180deg); }
-.accountDetails summary:focus-visible { outline: 2px solid var(--rent-purple); outline-offset: 5px; }
 .breakdown { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 16px; border-radius: 8px; background: rgb(255 255 255 / 3%); }
 .breakdown span { display: block; font-size: 11px; color: #b5a3bd; margin-bottom: 6px; }
 .breakdown strong { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
@@ -138,10 +120,7 @@
 @media (max-width: 540px) {
   .choices { padding: 7px; gap: 5px; }
   .choice { padding: 22px 6px 20px; }
-  .orb { width: 112px; height: 112px; margin-bottom: 18px; }
-  .accountIcon { width: 72px; height: 72px; }
-  .walletIcon { width: 56px; height: 56px; }
-  .orbArrow, .pump .orbArrow { width: 18px; height: 18px; top: 15px; right: 19px; }
+  .orb { width: 124px; height: 124px; max-width: 100%; margin-bottom: 18px; }
   .choiceTitle { font-size: 18px; }
   .choiceSubtitle { font-size: 10px; }
   .amount { font-size: 15px; }

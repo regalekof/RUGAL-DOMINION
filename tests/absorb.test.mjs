@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { Keypair, PublicKey, SystemProgram, Transaction, VersionedTransaction } from '@solana/web3.js'
+import { Keypair, PublicKey, SystemProgram, SystemInstruction, Transaction, VersionedTransaction } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, AccountLayout, AccountState } from '@solana/spl-token'
 import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, rentTotals, estimatedRentLabel, selectRentBatch, assertUnchanged, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery } from '../lib/absorb.ts'
 
@@ -85,8 +85,10 @@ test('Pump closure matches official account order and contains no claim instruct
   assert.throws(() => closeRentInstruction('pump', { ...pumpRow(), blocked: 'Pending rewards' }, user), /Pending/)
 })
 
-test('rent recovery returns actual balances without service fees; invalid selections are rejected', () => {
-  assert.deepEqual(rentTotals([pumpRow(), tokenRow()]), { gross: 2860040, net: 2860040 })
+test('rent recovery charges 2% per actual account balance; invalid selections are rejected', () => {
+  assert.deepEqual(rentTotals([pumpRow(), tokenRow()]), { gross: 2860040, fee: 57200, net: 2802840 })
+  assert.equal(rentTotals([{ ...tokenRow(), lamports: 149 }, { ...pumpRow(), lamports: 149 }]).fee, 4, 'round down per account, not after summing')
+  assert.throws(() => rentTotals([{ ...tokenRow(), lamports: -1 }]), /Invalid/)
   assertUnchanged([pumpRow()], [pumpRow()])
   for (const fresh of [[], [{ ...pumpRow(), blocked: 'pending' }], [{ ...pumpRow(), lamports: rent + 1 }], [{ ...pumpRow(), program: TOKEN_PROGRAM_ID.toBase58() }]]) assert.throws(() => assertUnchanged([pumpRow()], fresh), /changed/)
   assert.throws(() => assertUnchanged([pumpRow(), pumpRow()], [pumpRow()]), /selection/)
@@ -115,13 +117,17 @@ function mockConnection() {
   }
 }
 
-test('preparation uses network fee estimate and adds no service-fee transfer', async () => {
+test('preparation adds the 2% service transfer after closing', async () => {
   const rpc = mockConnection(), rows = await scanTokenRent(rpc, user)
   const preview = await prepareRentRecovery(rpc, user, 'token', rows)
   assert.equal(preview.networkFee, 5000)
   assert.ok(preview.transaction.instructions[0].programId.equals(TOKEN_PROGRAM_ID))
-  assert.equal(preview.transaction.instructions.length, 1)
-  assert.equal(preview.net, preview.gross)
+  assert.equal(preview.transaction.instructions.length, 2)
+  const feeTransfer = SystemInstruction.decodeTransfer(preview.transaction.instructions[1])
+  assert.equal(feeTransfer.toPubkey.toBase58(), 'Dkmdvd9iZWKGXiSNExgYYX7PZNncewM4WqHBgN1knUzH')
+  assert.ok(feeTransfer.fromPubkey.equals(user))
+  assert.equal(feeTransfer.lamports, BigInt(30276))
+  assert.equal(preview.net, preview.gross - preview.fee)
   assert.equal(preview.transaction.serialize({ requireAllSignatures: false }).length < 1232, true)
   assert.equal(rpc.calls[0][1].sigVerify, false)
   rpc.getBalance = async () => 4999
@@ -211,16 +217,19 @@ function mixedConnection(count = 2) {
   return rpc
 }
 
-test('both categories combine into ONE transaction with no service-fee transfer', async () => {
+test('both categories combine into ONE transaction with one aggregated service transfer', async () => {
   const rpc = mixedConnection()
   const rows = selectRentBatch([...(await scanTokenRent(rpc, user)), ...(await scanPumpRent(rpc, user))])
   const preview = await prepareRentRecovery(rpc, user, 'both', rows)
   assert.equal(rows.length, 4)
-  assert.equal(preview.transaction.instructions.length, 4)
+  assert.equal(preview.transaction.instructions.length, 5)
   const programs = preview.transaction.instructions.map(ix => ix.programId.toBase58())
   for (const program of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ...PUMP_PROGRAMS.map(item => item.id)]) assert.ok(programs.includes(program.toBase58()))
-  assert.ok(!programs.includes(SystemProgram.programId.toBase58()))
-  assert.equal(preview.net, rentTotals(rows).gross)
+  assert.equal(programs.filter(program => program === SystemProgram.programId.toBase58()).length, 1)
+  const transfer = SystemInstruction.decodeTransfer(preview.transaction.instructions.at(-1))
+  assert.equal(transfer.toPubkey.toBase58(), 'Dkmdvd9iZWKGXiSNExgYYX7PZNncewM4WqHBgN1knUzH')
+  assert.equal(transfer.lamports, BigInt(rentTotals(rows).fee))
+  assert.equal(preview.net, rentTotals(rows).net)
   preview.transaction.sign(signer)
   assert.equal(preview.transaction.signatures.length, 1)
   await submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {})
@@ -235,7 +244,7 @@ test('maximum combined batch includes both Pump accounts and fits one packet', a
   assert.deepEqual(rows.slice(0, 2).map(row => row.address), pump.map(row => row.address))
   const preview = await prepareRentRecovery(rpc, user, 'both', rows)
   assert.ok(preview.transaction.serialize({ requireAllSignatures: false }).length <= 1232)
-  assert.equal(preview.transaction.instructions.length, MAX_RENT_ACCOUNTS)
+  assert.equal(preview.transaction.instructions.length, MAX_RENT_ACCOUNTS + 1)
 })
 
 test('combined recovery never broadcasts when a Pump account changes after signing', async () => {

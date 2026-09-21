@@ -1,15 +1,16 @@
 "use client"
 
 import Link from 'next/link'
+import Image from 'next/image'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js'
-import { ArrowLeft, ArrowUpRight, Check, ChevronDown, ExternalLink, RefreshCw, Wallet, Zap } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, Check, ExternalLink, RefreshCw, Zap } from 'lucide-react'
 import { SiteHeader } from '@/components/site-header'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { addLeaderboardPoints } from '@/components/leaderboard'
-import { MAX_RENT_ACCOUNTS, estimatedRentLabel, prepareRentRecovery, scanPumpRent, scanTokenRent, selectRentBatch, submitRentRecovery } from '@/lib/absorb'
+import { MAX_RENT_ACCOUNTS, FEE_WALLET, rentTotals, estimatedRentLabel, prepareRentRecovery, scanPumpRent, scanTokenRent, selectRentBatch, submitRentRecovery } from '@/lib/absorb'
 import type { RentAccount, RentKind, RecoveryKind, RentPreview } from '@/lib/absorb'
 import styles from './absorb.module.css'
 
@@ -116,7 +117,7 @@ export default function AbsorbPage() {
       try {
         const referral = localStorage.getItem('referral_code') || undefined
         for (let i = 0; i < review.accounts.length; i++) {
-          await addLeaderboardPoints(wallet, 'absorb', 0, referral)
+          await addLeaderboardPoints(wallet, 'absorb', i === 0 ? fresh.fee / LAMPORTS_PER_SOL : 0, referral)
         }
       } catch { /* Optional leaderboard does not affect recovery. */ }
       if (isCurrent()) await refresh()
@@ -134,6 +135,7 @@ export default function AbsorbPage() {
   const selectedAccounts = selectedResults.flatMap(result => result.accounts)
   const eligible = selectedAccounts.filter(account => !account.blocked)
   const batch = selectRentBatch(selectedAccounts)
+  const totals = rentTotals(batch)
   const scanError = selectedResults.map((result, index) => result.error ? `${titles[selection[index]]}: ${result.error}` : '').filter(Boolean).join(' ')
 
   const toggleKind = (type: RentKind) => {
@@ -174,13 +176,7 @@ export default function AbsorbPage() {
                 return (
                   <button key={type} type="button" aria-label={titles[type]} aria-pressed={selectedKinds[type]} aria-controls="rent-recovery-summary" onClick={() => toggleKind(type)} disabled={busy} className={`${styles.choice} ${type === 'pump' ? styles.pump : ''}`}>
                     <span className={styles.orb} aria-hidden="true">
-                      {type === 'token' ? (
-                        <svg viewBox="0 0 100 100" className={styles.accountIcon} fill="none">
-                          <path d="M27 27h53l-9 12H18l9-12Zm-9 20h53l9 12H27l-9-12Zm9 20h53l-9 12H18l9-12Z" fill="currentColor" />
-                          <path d="M12 64v18a6 6 0 0 0 6 6h62a6 6 0 0 0 6-6V64" stroke="currentColor" strokeWidth="5" />
-                        </svg>
-                      ) : <Wallet className={styles.walletIcon} strokeWidth={1.5} />}
-                      <ArrowUpRight className={styles.orbArrow} />
+                      <Image src={type === 'token' ? '/absorb/accounts.png' : '/absorb/pump-reward.png'} alt="" fill sizes="(max-width: 540px) 124px, 190px" className={styles.artwork} />
                       <span className={styles.selectedMark}><Check size={14} strokeWidth={3} /></span>
                     </span>
                     <span className={styles.choiceTitle}>{titles[type]}</span>
@@ -193,38 +189,87 @@ export default function AbsorbPage() {
                 )
               })}
             </div>
-                  <Card id="rent-recovery-summary" className={styles.detailsCard}>
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2"><Zap className="h-5 w-5 text-primary" />{selection.length ? titles[recoveryKind] : 'Choose your accounts'}</CardTitle>
-                      <CardDescription>{!selection.length ? 'Select Accounts, Pump Reward, or both above.' : 'Recover your selected accounts together with one wallet approval.'}</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-5">
-                      {scanError ? <p role="alert" className="text-sm text-red-400">Scan failed: {scanError} Refresh or deselect the unavailable category to continue.</p> : (
-                        <>
-                          <p role="status" className="text-sm text-muted-foreground">{!selection.length ? 'Nothing selected.' : !wallet ? 'Connect your wallet above to get started.' : loading ? 'Finding eligible accounts…' : `${eligible.length} account${eligible.length === 1 ? '' : 's'} ready for recovery`}</p>
-                          {wallet && selection.length > 0 && !loading && selectedAccounts.length === 0 && <p className="text-sm text-muted-foreground">No accounts found for your selection.</p>}
-                          {selectedAccounts.length > 0 && <details className={styles.accountDetails}>
-                            <summary>View accounts ({selectedAccounts.length}){selectedAccounts.length > eligible.length && <span> · {selectedAccounts.length - eligible.length} excluded</span>}<ChevronDown size={16} /></summary>
-                            <ul className="mt-3 max-h-80 space-y-3 overflow-auto">
-                            {selectedAccounts.map(account => <li key={account.address} className="rounded border border-red-900/30 p-3 text-sm">
-                              <div className="flex flex-wrap justify-between gap-2"><span>{account.label} · <a className="underline" href={`https://solscan.io/account/${account.address}${cluster}`} target="_blank" rel="noopener noreferrer">{short(account.address)}</a></span><span>{sol(account.lamports)} SOL{account.blocked ? ' held' : ' recoverable'}</span></div>
-                              {account.blocked && <p className="mt-2 text-amber-300">Excluded: {account.blocked}</p>}
-                            </li>)}
-                            </ul>
-                          </details>}
-                          {eligible.length > MAX_RENT_ACCOUNTS && <p className="text-sm text-muted-foreground">This transaction includes {batch.length} of {eligible.length} eligible accounts. Remaining accounts stay available for another batch.</p>}
-                        </>
-                      )}
-                      <Button className={styles.recoverButton} disabled={!wallet || !signTransaction || loading || busy || !!scanError || !batch.length || !selection.length} onClick={() => void prepare(recoveryKind, batch)}>{busy ? <><RefreshCw className="mr-2 h-4 w-4 animate-spin" />Processing…</> : <>Review & recover in 1 transaction<ArrowUpRight className="ml-2 h-4 w-4" /></>}</Button>
-                      <p className="text-center text-xs text-muted-foreground">One transaction · One wallet approval · No token burns</p>
-                    </CardContent>
-                  </Card>
+            <Card id="rent-recovery-summary" className={styles.detailsCard}>
+  <CardHeader>
+    <CardTitle className="flex items-center gap-2">
+      <Zap className="h-5 w-5 text-primary" />
+      {selection.length ? titles[recoveryKind] : 'Choose your accounts'}
+    </CardTitle>
+
+    <CardDescription>
+      {!selection.length
+        ? 'Select Accounts, Pump Reward, or both above.'
+        : 'Recover your selected accounts together with one wallet approval.'}
+    </CardDescription>
+  </CardHeader>
+
+  <CardContent className="space-y-5">
+    {scanError ? (
+      <p role="alert" className="text-sm text-red-400">
+        Scan failed: {scanError} Refresh or deselect the unavailable category to continue.
+      </p>
+    ) : (
+      <>
+        <p role="status" className="text-sm text-muted-foreground">
+          {!selection.length
+            ? 'Nothing selected.'
+            : !wallet
+              ? 'Connect your wallet above to get started.'
+              : loading
+                ? 'Finding eligible accounts…'
+                : `${eligible.length} account${eligible.length === 1 ? '' : 's'} ready for recovery`}
+        </p>
+
+        {wallet && selection.length > 0 && !loading && selectedAccounts.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            No accounts found for your selection.
+          </p>
+        )}
+
+        {eligible.length > MAX_RENT_ACCOUNTS && (
+          <p className="text-sm text-muted-foreground">
+            This transaction includes {batch.length} of {eligible.length} eligible accounts.
+            Remaining accounts stay available for another batch.
+          </p>
+        )}
+      </>
+    )}
+
+    <Button
+      className={styles.recoverButton}
+      disabled={
+        !wallet ||
+        !signTransaction ||
+        loading ||
+        busy ||
+        !!scanError ||
+        !batch.length ||
+        !selection.length
+      }
+      onClick={() => void prepare(recoveryKind, batch)}
+    >
+      {busy ? (
+        <>
+          <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+          Processing…
+        </>
+      ) : (
+        <>
+          Review & recover in 1 transaction
+          <ArrowUpRight className="ml-2 h-4 w-4" />
+        </>
+      )}
+    </Button>
+
+    <p className="text-center text-xs text-muted-foreground">
+      One transaction · One wallet approval · No token burns
+    </p>
+  </CardContent>
+</Card>
           </div>
           {review && <Card className={styles.detailsCard}>
-            <CardHeader><h2 ref={reviewHeading} tabIndex={-1} className="text-xl font-semibold outline-none">Review {titles[review.kind]} rent recovery</h2><CardDescription>{review.accounts.length} accounts · One transaction. Actual amounts below replace the rounded card estimates.</CardDescription></CardHeader>
+            <CardHeader><h2 ref={reviewHeading} tabIndex={-1} className="text-xl font-semibold outline-none">Recover {review.accounts.length} account{review.accounts.length === 1 ? '' : 's'}</h2></CardHeader>
             <CardContent className="space-y-4 text-sm">
-              <ul className="space-y-1">{review.accounts.map(account => <li key={account.address} className="break-all font-mono">{account.address}</li>)}</ul>
-              <p>Actual rent returned: {sol(review.preview.gross)} SOL<br />Estimated network fee: {sol(review.preview.networkFee)} SOL<br /><strong>Estimated net increase: {sol(review.preview.net - review.preview.networkFee)} SOL</strong></p>
               <div className="flex flex-wrap gap-3"><Button onClick={() => void recover()} disabled={busy}>{busy ? 'Processing…' : 'Approve in wallet'}</Button><Button variant="outline" onClick={() => setReview(null)} disabled={busy}>Cancel</Button></div>
             </CardContent>
           </Card>}

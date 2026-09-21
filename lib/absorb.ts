@@ -1,5 +1,5 @@
 import { Buffer } from 'buffer'
-import { PublicKey, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
+import { PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
 import type { AccountInfo, Connection } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ExtensionType, getExtensionTypes, getTransferFeeAmount, unpackAccount, createCloseAccountInstruction } from '@solana/spl-token'
 
@@ -7,6 +7,7 @@ export type RentKind = 'token' | 'pump'
 export type RecoveryKind = RentKind | 'both'
 export type RentAccount = { address: string; program: string; label: string; lamports: number; blocked?: string }
 export const MAX_RENT_ACCOUNTS = 10
+export const FEE_WALLET = new PublicKey('Dkmdvd9iZWKGXiSNExgYYX7PZNncewM4WqHBgN1knUzH')
 export const TOKEN_PROGRAMS = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]
 export const PUMP_PROGRAMS = [
   { id: new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'), label: 'Pump.fun' },
@@ -22,9 +23,12 @@ export function pumpAddress(user: PublicKey, program: PublicKey) {
 }
 
 export function rentTotals(accounts: RentAccount[]) {
+  if (accounts.some(account => !Number.isSafeInteger(account.lamports) || account.lamports < 0)) throw new Error('Invalid account balance.')
   const gross = accounts.reduce((sum, account) => sum + account.lamports, 0)
   if (!Number.isSafeInteger(gross) || gross < 0) throw new Error('Invalid account balance.')
-  return { gross, net: gross }
+  // Round down per account to whole lamports, then combine into one transfer.
+  const fee = accounts.reduce((sum, account) => sum + Number(BigInt(account.lamports) * BigInt(2) / BigInt(100)), 0)
+  return { gross, fee, net: gross - fee }
 }
 
 // Card display only. Never use this estimate to build or price a transaction.
@@ -154,7 +158,9 @@ export async function prepareRentRecovery(connection: Connection, user: PublicKe
   const latest = await connection.getLatestBlockhash('confirmed')
   const transaction = new Transaction({ feePayer: user, ...latest })
   selected.forEach(account => transaction.add(closeRentInstruction(accountRentKind(account), account, user)))
-  // Absorb has no service fee: only account-closing instructions are included.
+  // Recover rent first so the service fee is funded from the returned SOL.
+  // This transfer is atomic with all closures; it is not sent separately.
+  if (totals.fee > 0) transaction.add(SystemProgram.transfer({ fromPubkey: user, toPubkey: FEE_WALLET, lamports: totals.fee }))
   if (transaction.serialize({ requireAllSignatures: false, verifySignatures: false }).length > 1232) throw new Error('This selection is too large for one transaction. Select fewer accounts.')
   const message = transaction.compileMessage()
   const networkFee = (await connection.getFeeForMessage(message, 'confirmed')).value

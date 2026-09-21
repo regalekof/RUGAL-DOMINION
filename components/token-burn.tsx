@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { Flame, Zap, ExternalLink, CheckCircle } from 'lucide-react'
 import { addLeaderboardPoints } from '@/components/leaderboard'
+import { isProtectedBurnMint } from '@/lib/burn-protection'
 
 // Fee wallet address
 const FEE_WALLET = new PublicKey('5YjWWvfD1r2YaHqtHbzBYvyjWbpLYT8ebVgyngCJXFVU')
@@ -177,7 +178,7 @@ export function TokenBurn() {
           const tokenAmount = parsedInfo.tokenAmount
           // Exclude NFTs: tokens with amount = 1 and decimals = 0
           const isNFT = tokenAmount.amount === '1' && tokenAmount.decimals === 0
-          return tokenAmount.amount !== '0' && !isNFT
+          return tokenAmount.amount !== '0' && !isNFT && !isProtectedBurnMint(parsedInfo.mint)
         })
         .map(async ({ account, pubkey }) => {
           const parsedInfo = account.data.parsed.info
@@ -308,9 +309,10 @@ export function TokenBurn() {
   }, [publicKey, hasInitialFetch, fetchTokens])
 
   // Memoize the token list to prevent unnecessary re-renders
-  const memoizedTokens = useMemo(() => tokens, [tokens])
+  const memoizedTokens = useMemo(() => tokens.filter(token => !isProtectedBurnMint(token.mint)), [tokens])
 
   const toggleTokenSelection = (address: string) => {
+    if (!memoizedTokens.some(token => token.address === address)) return
     setSelectedTokens(prev => {
       const newSet = new Set(prev)
       if (newSet.has(address)) {
@@ -351,6 +353,11 @@ export function TokenBurn() {
       }
       
       const tokensToBurn = tokens.filter(token => selectedTokens.has(token.address))
+      if (tokensToBurn.length === 0) throw new Error('Please select tokens to burn.')
+      // Recheck before constructing instructions, including stale selections after refresh.
+      if (tokensToBurn.some(token => isProtectedBurnMint(token.mint))) {
+        throw new Error('USDC and USDT are excluded from burning. Clear your selection and try again.')
+      }
       
       // Calculate rent exemption amount
       const rentExemptionLamports = await connection.getMinimumBalanceForRentExemption(165)
