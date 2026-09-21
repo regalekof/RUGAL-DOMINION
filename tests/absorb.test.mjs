@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { Keypair, PublicKey, SystemProgram, SystemInstruction, Transaction, VersionedTransaction } from '@solana/web3.js'
+import { ComputeBudgetProgram, ComputeBudgetInstruction, Keypair, PublicKey, SystemProgram, SystemInstruction, Transaction, VersionedTransaction } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, AccountLayout, AccountState } from '@solana/spl-token'
 import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, rentTotals, estimatedRentLabel, selectRentBatch, assertUnchanged, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery } from '../lib/absorb.ts'
 
@@ -121,9 +121,9 @@ test('preparation adds the 2% service transfer after closing', async () => {
   const rpc = mockConnection(), rows = await scanTokenRent(rpc, user)
   const preview = await prepareRentRecovery(rpc, user, 'token', rows)
   assert.equal(preview.networkFee, 5000)
-  assert.ok(preview.transaction.instructions[0].programId.equals(TOKEN_PROGRAM_ID))
-  assert.equal(preview.transaction.instructions.length, 2)
-  const feeTransfer = SystemInstruction.decodeTransfer(preview.transaction.instructions[1])
+  assert.ok(preview.transaction.instructions[1].programId.equals(TOKEN_PROGRAM_ID))
+  assert.equal(preview.transaction.instructions.length, 3)
+  const feeTransfer = SystemInstruction.decodeTransfer(preview.transaction.instructions.at(-1))
   assert.equal(feeTransfer.toPubkey.toBase58(), 'Dkmdvd9iZWKGXiSNExgYYX7PZNncewM4WqHBgN1knUzH')
   assert.ok(feeTransfer.fromPubkey.equals(user))
   assert.equal(feeTransfer.lamports, BigInt(30276))
@@ -142,6 +142,43 @@ test('signed bytes are simulated without blockhash mutation and preflight stays 
   assert.equal(await submitRentRecovery(rpc, preview.transaction, preview, () => true, signature => { sent = signature }), 'signature')
   assert.equal(sent, 'signature'); assert.equal(rpc.calls[1][1].sigVerify, true)
   assert.deepEqual(rpc.calls[2][1], bytes); assert.equal(rpc.calls[2][2].skipPreflight, false)
+})
+
+test('explicit priority policy survives wallet serialization without triggering Phantom auto-injection', async () => {
+  const rpc = mockConnection()
+  let estimatedMessage
+  rpc.getFeeForMessage = async message => { estimatedMessage = message.serialize(); return { value: 5000 } }
+  const preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+  assert.deepEqual(estimatedMessage, preview.expectedMessage)
+  // Model the wallet transport and Phantom's documented rule: only inject when
+  // no compute-unit price/limit instruction is present. No real wallet is used.
+  const walletTx = Transaction.from(preview.transaction.serialize({ requireAllSignatures: false }))
+  const budget = walletTx.instructions.filter(ix => ix.programId.equals(ComputeBudgetProgram.programId))
+  assert.equal(budget.length, 1)
+  assert.equal(ComputeBudgetInstruction.decodeSetComputeUnitPrice(budget[0]).microLamports, 0n)
+  const hasPriorityPolicy = budget.some(ix => ['SetComputeUnitPrice', 'SetComputeUnitLimit'].includes(ComputeBudgetInstruction.decodeInstructionType(ix)))
+  if (!hasPriorityPolicy) walletTx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 }))
+  walletTx.sign(signer)
+  const returned = Transaction.from(walletTx.serialize())
+  assert.deepEqual(returned.serializeMessage(), preview.expectedMessage)
+  await submitRentRecovery(rpc, returned, preview, () => true, () => {})
+  assert.equal(rpc.calls.filter(([type]) => type === 'send').length, 1)
+})
+
+test('changed compute price, recipient, blockhash or recovery destination still blocks broadcast', async () => {
+  for (const change of [
+    tx => { tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 }) },
+    tx => { tx.instructions.at(-1).keys[1].pubkey = other },
+    tx => { tx.recentBlockhash = address.toBase58() },
+    tx => { tx.instructions[1].keys[1].pubkey = other },
+  ]) {
+    const rpc = mockConnection(), preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+    const walletTx = Transaction.from(preview.transaction.serialize({ requireAllSignatures: false }))
+    change(walletTx)
+    walletTx.sign(signer)
+    await assert.rejects(submitRentRecovery(rpc, walletTx, preview, () => true, () => {}), /wallet changed the transaction/)
+    assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
+  }
 })
 
 test('wallet mutation, simulation rejection and wallet switches never broadcast', async () => {
@@ -176,6 +213,7 @@ test('account changes during wallet approval are rejected before submission', as
 
 test('a ten-account mixed-token batch fits the Solana packet limit', () => {
   const tx = new Transaction({ feePayer: user, recentBlockhash: other.toBase58() })
+  tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 0 }))
   for (let index = 0; index < MAX_RENT_ACCOUNTS; index++) {
     const accountAddress = Keypair.fromSeed(new Uint8Array(32).fill(index + 30)).publicKey
     const row = tokenRentAccount(accountAddress, tokenInfo(index % 2 ? TOKEN_PROGRAM_ID : TOKEN_2022_PROGRAM_ID), user)
@@ -222,7 +260,7 @@ test('both categories combine into ONE transaction with one aggregated service t
   const rows = selectRentBatch([...(await scanTokenRent(rpc, user)), ...(await scanPumpRent(rpc, user))])
   const preview = await prepareRentRecovery(rpc, user, 'both', rows)
   assert.equal(rows.length, 4)
-  assert.equal(preview.transaction.instructions.length, 5)
+  assert.equal(preview.transaction.instructions.length, 6)
   const programs = preview.transaction.instructions.map(ix => ix.programId.toBase58())
   for (const program of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ...PUMP_PROGRAMS.map(item => item.id)]) assert.ok(programs.includes(program.toBase58()))
   assert.equal(programs.filter(program => program === SystemProgram.programId.toBase58()).length, 1)
@@ -244,7 +282,7 @@ test('maximum combined batch includes both Pump accounts and fits one packet', a
   assert.deepEqual(rows.slice(0, 2).map(row => row.address), pump.map(row => row.address))
   const preview = await prepareRentRecovery(rpc, user, 'both', rows)
   assert.ok(preview.transaction.serialize({ requireAllSignatures: false }).length <= 1232)
-  assert.equal(preview.transaction.instructions.length, MAX_RENT_ACCOUNTS + 1)
+  assert.equal(preview.transaction.instructions.length, MAX_RENT_ACCOUNTS + 2)
 })
 
 test('combined recovery never broadcasts when a Pump account changes after signing', async () => {

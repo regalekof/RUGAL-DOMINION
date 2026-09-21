@@ -1,5 +1,5 @@
 import { Buffer } from 'buffer'
-import { PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
+import { ComputeBudgetProgram, PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
 import type { AccountInfo, Connection } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ExtensionType, getExtensionTypes, getTransferFeeAmount, unpackAccount, createCloseAccountInstruction } from '@solana/spl-token'
 
@@ -157,6 +157,12 @@ export async function prepareRentRecovery(connection: Connection, user: PublicKe
   const totals = rentTotals(selected)
   const latest = await connection.getLatestBlockhash('confirmed')
   const transaction = new Transaction({ feePayer: user, ...latest })
+  // Declare the price before estimating, simulating and asking for a signature.
+  // Phantom otherwise injects priority instructions at signing, invalidating our
+  // exact-message check. Zero preserves the existing base-fee-only policy; leave
+  // the default compute-unit limit intact. Never relax the signed-message check.
+  // https://docs.phantom.com/developer-powertools/solana-priority-fees
+  transaction.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 0 }))
   selected.forEach(account => transaction.add(closeRentInstruction(accountRentKind(account), account, user)))
   // Recover rent first so the service fee is funded from the returned SOL.
   // This transfer is atomic with all closures; it is not sent separately.
