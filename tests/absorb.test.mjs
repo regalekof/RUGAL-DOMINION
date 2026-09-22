@@ -230,10 +230,10 @@ test('invalid compute consumption is rejected and a missing fee quote gets only 
   assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
 })
 
-test('changed compute price, recipient, blockhash or recovery destination still blocks broadcast', async () => {
+test('over-cap compute price, invalid limit, recipient, blockhash or recovery destination still blocks broadcast', async () => {
   for (const change of [
-    tx => { tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 }) },
-    tx => { tx.instructions[1] = ComputeBudgetProgram.setComputeUnitLimit({ units: 100000 }) },
+    tx => { tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000000 }) },
+    tx => { tx.instructions[1] = ComputeBudgetProgram.setComputeUnitLimit({ units: 1400001 }) },
     tx => { tx.instructions.at(-1).keys[1].pubkey = other },
     tx => { tx.recentBlockhash = address.toBase58() },
     tx => { tx.instructions[2].keys[1].pubkey = other },
@@ -243,6 +243,50 @@ test('changed compute price, recipient, blockhash or recovery destination still 
     change(walletTx)
     walletTx.sign(signer)
     await assert.rejects(submitRentRecovery(rpc, walletTx, preview, () => true, () => {}), /wallet changed the transaction/)
+    assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
+  }
+})
+
+test('wallet compute changes within the total cap pass with or without guards; original signed bytes are sent', async () => {
+  for (const withGuards of [false, true]) {
+    for (const [limit, price] of [[100000, 50000], [100001, 49999], [1400000, 1000], [100000, 0]]) {
+      const rpc = mockConnection(), preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+      // A wallet may resize/reprice and reorder the budget instructions.
+      const tx = Transaction.from(preview.transaction.serialize({ requireAllSignatures: false }))
+      tx.instructions[0] = ComputeBudgetProgram.setComputeUnitLimit({ units: limit })
+      tx.instructions[1] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: price })
+      if (withGuards) { tx.instructions.unshift(lighthouseGuard()); tx.add(lighthouseGuard(other)) }
+      tx.sign(signer)
+      const bytes = tx.serialize()
+      rpc.getFeeForMessage = async () => { throw new Error('No additional RPC fee check needed') }
+      assert.equal(recoveryMessageDifference(preview.expectedMessage, tx.serializeMessage()), undefined)
+      await submitRentRecovery(rpc, tx, preview, () => true, () => {})
+      assert.deepEqual(rpc.calls.find(([type]) => type === 'send')[1], bytes)
+    }
+  }
+})
+
+test('wallet budget allowance never permits malformed budgets or hidden recovery changes', async () => {
+  for (const mutate of [
+    tx => { tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50001 }) }, // 5001 priority lamports: over cap
+    tx => { tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 })) },
+    tx => { tx.instructions.splice(1, 1) },
+    tx => { tx.instructions[1] = ComputeBudgetProgram.setComputeUnitLimit({ units: 0 }) },
+    tx => { tx.instructions[0].data = Buffer.from([3, 0]) },
+    tx => { tx.instructions[0].data[0] = 0 },
+    tx => { tx.instructions[0].keys.push({ pubkey: user, isSigner: true, isWritable: true }) },
+    tx => { tx.instructions[2].keys[1].pubkey = other },
+    tx => { tx.instructions.at(-1).data[4] ^= 1 },
+    tx => { tx.instructions.at(-1).keys[1].pubkey = other },
+    tx => { tx.instructions.splice(2, 1) },
+    tx => { tx.add(SystemProgram.transfer({ fromPubkey: user, toPubkey: other, lamports: 1 })) },
+  ]) {
+    const rpc = mockConnection(), preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
+    const tx = Transaction.from(preview.transaction.serialize({ requireAllSignatures: false }))
+    tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50000 })
+    tx.instructions[1] = ComputeBudgetProgram.setComputeUnitLimit({ units: 100000 })
+    mutate(tx)
+    await assert.rejects(submitRentRecovery(rpc, tx, preview, () => true, () => {}), /wallet changed/)
     assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
   }
 })
@@ -275,7 +319,7 @@ test('recovery comparison accepts identical plain byte arrays without trusting w
 
 test('recovery mismatch diagnostics identify changes without broadcasting or exposing addresses', async () => {
   for (const [change, reason] of [
-    [tx => { tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 }) }, 'compute-budget instructions changed'],
+    [tx => { tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000000 }) }, 'network fee exceeds 0.00001 SOL cap'],
     [tx => { tx.recentBlockhash = address.toBase58() }, 'blockhash changed'],
     [tx => { tx.instructions.at(-1).data[4] ^= 1 }, 'instruction 4 data changed'],
     [tx => { tx.instructions.push(tx.instructions[2]) }, 'instruction count changed (4 to 5)'],
@@ -324,7 +368,7 @@ test('two Phantom Lighthouse assertions may augment recovery instructions; exact
 
 test('Lighthouse guards never permit modified recovery instructions, transfers, ordering, payer or blockhash', async () => {
   for (const change of [
-    tx => { tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10 }) },
+    tx => { tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000000 }) },
     tx => { tx.instructions[2].keys[1].pubkey = other },
     tx => { tx.instructions[3].keys[1].pubkey = other },
     tx => { tx.instructions[3].data[4] ^= 1 },

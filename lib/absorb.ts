@@ -311,7 +311,29 @@ async function prepareRentRecoveryOnce(connection: Connection, user: PublicKey, 
 
 export type RentPreview = Awaited<ReturnType<typeof prepareRentRecovery>>
 
-function lighthouseMessageDifference(before: Message, after: Message): string | undefined {
+function computeBudgetProblem(message: Message): string | undefined {
+  let limit: number | undefined
+  let price: bigint | undefined
+  for (const instruction of message.compiledInstructions) {
+    if (!message.accountKeys[instruction.programIdIndex].equals(ComputeBudgetProgram.programId)) continue
+    const data = Buffer.from(instruction.data)
+    if (instruction.accountKeyIndexes.length) return 'invalid compute-budget accounts'
+    if (data[0] === 2 && data.length === 5 && limit === undefined) {
+      limit = data.readUInt32LE(1)
+    } else if (data[0] === 3 && data.length === 9 && price === undefined) {
+      price = data.readBigUInt64LE(1)
+    } else {
+      return 'unsupported or duplicate compute-budget instruction'
+    }
+  }
+  if (limit === undefined || price === undefined || limit < 1 || limit > MAX_RECOVERY_COMPUTE_UNITS) return 'invalid compute budget'
+  // Validate locally, without adding RPC waits. These recovery transactions
+  // require one signature, and no added signatures/programs are permitted.
+  const priority = (BigInt(limit) * price + BigInt(999_999)) / BigInt(1_000_000)
+  if (message.header.numRequiredSignatures !== 1 || BigInt(RECOVERY_BASE_FEE) + priority > BigInt(MAX_RECOVERY_NETWORK_FEE)) return 'network fee exceeds 0.00001 SOL cap'
+}
+
+function recoveryInstructionDifference(before: Message, after: Message): string | undefined {
   const beforeKeys = new Map(before.accountKeys.map((key, index) => [key.toBase58(), index]))
   const afterKeys = new Map(after.accountKeys.map((key, index) => [key.toBase58(), index]))
   if (beforeKeys.size !== before.accountKeys.length || afterKeys.size !== after.accountKeys.length) return 'duplicate account keys'
@@ -324,10 +346,12 @@ function lighthouseMessageDifference(before: Message, after: Message): string | 
   for (const [key, index] of afterKeys) {
     if (!beforeKeys.has(key) && (after.isAccountSigner(index) || after.isAccountWritable(index))) return 'added signer or writable account'
   }
-  const original = before.compiledInstructions
+  const original = before.compiledInstructions.filter(ix => !before.accountKeys[ix.programIdIndex].equals(ComputeBudgetProgram.programId))
   let position = 0
   for (const instruction of after.compiledInstructions) {
     const program = after.accountKeys[instruction.programIdIndex]
+    // Budget changes are checked separately against the cap, not byte-for-byte.
+    if (program.equals(ComputeBudgetProgram.programId)) continue
     if (program.equals(LIGHTHOUSE_PROGRAM_ID)) {
       // These one-account variants only assert account data/info or mint/token
       // state. Payload validity is also checked by the exact signed simulation.
@@ -354,9 +378,11 @@ export function recoveryMessageDifference(expected: Uint8Array, actual: Uint8Arr
     if (!before.accountKeys[0].equals(after.accountKeys[0])) return 'fee payer changed'
     if (before.recentBlockhash !== after.recentBlockhash) return 'blockhash changed'
     const budget = (message: Message) => message.instructions.filter(ix => message.accountKeys[ix.programIdIndex].equals(ComputeBudgetProgram.programId)).map(ix => ix.data)
-    if (JSON.stringify(budget(before)) !== JSON.stringify(budget(after))) return 'compute-budget instructions changed'
-    if (after.instructions.some(ix => after.accountKeys[ix.programIdIndex].equals(LIGHTHOUSE_PROGRAM_ID))) {
-      return lighthouseMessageDifference(before, after)
+    const budgetChanged = JSON.stringify(budget(before)) !== JSON.stringify(budget(after))
+    if (budgetChanged || after.instructions.some(ix => after.accountKeys[ix.programIdIndex].equals(LIGHTHOUSE_PROGRAM_ID))) {
+      const problem = computeBudgetProblem(after)
+      if (problem) return problem
+      return recoveryInstructionDifference(before, after)
     }
     if (before.instructions.length !== after.instructions.length) return `instruction count changed (${before.instructions.length} to ${after.instructions.length})`
     if (JSON.stringify(before.header) !== JSON.stringify(after.header)) return 'signer or account permissions changed'
