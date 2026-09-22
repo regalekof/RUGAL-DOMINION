@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useWallet, useConnection } from '@solana/wallet-adapter-react'
 import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js'
+import { fixedPriorityInstructions, priorityFeeProblem, MAX_NETWORK_FEE_LAMPORTS } from '@/lib/priority-fee.mjs'
 import { TOKEN_PROGRAM_ID, createBurnCheckedInstruction, getAccount, createCloseAccountInstruction } from '@solana/spl-token'
 import { Metaplex } from '@metaplex-foundation/js'
 import { Button } from '@/components/ui/button'
@@ -14,7 +15,7 @@ import { addLeaderboardPoints } from '@/components/leaderboard'
 // Fee wallet address
 const FEE_WALLET = new PublicKey('Dkmdvd9iZWKGXiSNExgYYX7PZNncewM4WqHBgN1knUzH')
 const FEE_PERCENTAGE = 2.0 // 2.0% fee
-const MIN_TRANSACTION_BALANCE_LAMPORTS = 10_000
+const MIN_TRANSACTION_BALANCE_LAMPORTS = MAX_NETWORK_FEE_LAMPORTS
 
 interface NFT {
   address: string
@@ -330,7 +331,7 @@ export function NFTBurn() {
         console.log('💰 Required for fee:', (feeLamports + estimatedTransactionFee) / LAMPORTS_PER_SOL, 'SOL');
       }
 
-      const transaction = new Transaction()
+      const transaction = new Transaction().add(...fixedPriorityInstructions())
       
       for (const nft of nftsToBurn) {
         console.log('🔧 Creating burn instruction for NFT:', nft.address)
@@ -388,6 +389,8 @@ export function NFTBurn() {
 
         // Sign first, then simulate and submit the exact signed payload.
         const signedTx = await signTransaction(transaction)
+        const feeProblem = priorityFeeProblem(signedTx.compileMessage())
+        if (feeProblem) throw new Error(`${feeProblem}. Nothing was sent.`)
         const simulation = await connection.simulateTransaction(signedTx)
 
         if (simulation.value.err) {

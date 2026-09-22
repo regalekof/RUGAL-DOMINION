@@ -117,7 +117,7 @@ function mockConnection() {
       const { units } = ComputeBudgetInstruction.decodeSetComputeUnitLimit(tx.instructions[1])
       return { value: 5000 + Number((BigInt(units) * price + 999999n) / 1000000n) }
     },
-    getBalance: async () => 10000,
+    getBalance: async () => 115000,
     simulateTransaction: async (transaction, config) => { assert.ok(transaction instanceof VersionedTransaction); calls.push(['simulate', config]); return { value: { err: null } } },
     sendRawTransaction: async (bytes, config) => { calls.push(['send', bytes, config]); return 'signature' },
     getBlockHeight: async () => 95,
@@ -129,7 +129,7 @@ function mockConnection() {
 test('preparation adds the 2% service transfer after closing', async () => {
   const rpc = mockConnection(), rows = await scanTokenRent(rpc, user)
   const preview = await prepareRentRecovery(rpc, user, 'token', rows)
-  assert.equal(preview.networkFee, 10000)
+  assert.equal(preview.networkFee, 115000)
   assert.ok(preview.transaction.instructions[2].programId.equals(TOKEN_PROGRAM_ID))
   assert.equal(preview.transaction.instructions.length, 4)
   const feeTransfer = SystemInstruction.decodeTransfer(preview.transaction.instructions.at(-1))
@@ -139,7 +139,7 @@ test('preparation adds the 2% service transfer after closing', async () => {
   assert.equal(preview.net, preview.gross - preview.fee)
   assert.equal(preview.transaction.serialize({ requireAllSignatures: false }).length < 1232, true)
   assert.equal(rpc.calls[0][1].sigVerify, false)
-  rpc.getBalance = async () => 9999
+  rpc.getBalance = async () => 114999
   await assert.rejects(prepareRentRecovery(rpc, user, 'token', rows), /network fee/)
 })
 
@@ -165,7 +165,7 @@ test('explicit priority policy survives wallet serialization without triggering 
   const walletTx = Transaction.from(preview.transaction.serialize({ requireAllSignatures: false }))
   const budget = walletTx.instructions.filter(ix => ix.programId.equals(ComputeBudgetProgram.programId))
   assert.equal(budget.length, 2)
-  assert.equal(ComputeBudgetInstruction.decodeSetComputeUnitPrice(budget[0]).microLamports, 3571n)
+  assert.equal(ComputeBudgetInstruction.decodeSetComputeUnitPrice(budget[0]).microLamports, 78571n)
   assert.equal(ComputeBudgetInstruction.decodeSetComputeUnitLimit(budget[1]).units, 1400000)
   const hasPriorityPolicy = budget.some(ix => ['SetComputeUnitPrice', 'SetComputeUnitLimit'].includes(ComputeBudgetInstruction.decodeInstructionType(ix)))
   if (!hasPriorityPolicy) walletTx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 }))
@@ -177,7 +177,7 @@ test('explicit priority policy survives wallet serialization without triggering 
 })
 
 test('priority budget includes base fee, rounds safely and reserves compute for wallet guards', async () => {
-  assert.equal(MAX_RECOVERY_NETWORK_FEE, 10000)
+  assert.equal(MAX_RECOVERY_NETWORK_FEE, 115000)
   for (const consumed of [undefined, 0, 10000, 90001, 350000, 1000000, 1400000]) {
     const rpc = mockConnection()
     let feeCalls = 0, simulations = 0
@@ -194,11 +194,12 @@ test('priority budget includes base fee, rounds safely and reserves compute for 
     const preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
     const { units } = ComputeBudgetInstruction.decodeSetComputeUnitLimit(preview.transaction.instructions[1])
     const { microLamports } = ComputeBudgetInstruction.decodeSetComputeUnitPrice(preview.transaction.instructions[0])
-    const expectedUnits = consumed === undefined ? 1400000 : Math.min(1400000, Math.max(100000, Math.ceil(consumed * 1.2) + 50000))
+    const rawUnits = consumed === undefined ? 1400000 : Math.min(1400000, Math.max(100000, Math.ceil(consumed * 1.2) + 50000))
+    const expectedUnits = Math.ceil(rawUnits / 100000) * 100000
     assert.equal(units, expectedUnits)
     assert.ok(microLamports > 0n)
     const priority = (BigInt(units) * microLamports + 999999n) / 1000000n
-    assert.ok(priority <= 5000n)
+    assert.equal(priority, 110000n)
     assert.equal(preview.networkFee, 5000 + Number(priority))
     assert.ok(preview.networkFee <= MAX_RECOVERY_NETWORK_FEE)
     assert.equal(feeCalls, 1); assert.equal(simulations, 1)
@@ -211,7 +212,7 @@ test('priority budget includes base fee, rounds safely and reserves compute for 
 })
 
 test('over-cap or malformed network quotes block preparation, never broadcasting', async () => {
-  for (const value of [10001, 15000, NaN, -1, 9999.5]) {
+  for (const value of [115001, 150000, NaN, -1, 114999.5]) {
     const rpc = mockConnection()
     rpc.getFeeForMessage = async () => ({ value })
     await assert.rejects(prepareRentRecovery(rpc, user, 'token', [tokenRow()]), /cap|verified/)
@@ -271,7 +272,7 @@ test('wallet compute changes within the total cap pass with or without guards; o
 
 test('wallet budget allowance never permits malformed budgets or hidden recovery changes', async () => {
   for (const mutate of [
-    tx => { tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50001 }) }, // 5001 priority lamports: over cap
+    tx => { tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1100001 }) }, // 110001 priority lamports: over cap
     tx => { tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 })) },
     tx => { tx.instructions.splice(1, 1) },
     tx => { tx.instructions[1] = ComputeBudgetProgram.setComputeUnitLimit({ units: 0 }) },
@@ -322,7 +323,7 @@ test('recovery comparison accepts identical plain byte arrays without trusting w
 
 test('recovery mismatch diagnostics identify changes without broadcasting or exposing addresses', async () => {
   for (const [change, reason] of [
-    [tx => { tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000000 }) }, 'network fee exceeds 0.00001 SOL cap'],
+    [tx => { tx.instructions[0] = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000000 }) }, 'network fee exceeds 0.000115 SOL cap'],
     [tx => { tx.recentBlockhash = address.toBase58() }, 'blockhash changed'],
     [tx => { tx.instructions.at(-1).data[4] ^= 1 }, 'instruction 4 data changed'],
     [tx => { tx.instructions.push(tx.instructions[2]) }, 'instruction count changed (4 to 5)'],
@@ -431,10 +432,10 @@ test('PumpSwap claims and unwraps cashback before closing the accumulator', asyn
 
 test('native Pump cashback is not double counted and precedes optional closure', async () => {
   for (const pending of [false, true]) {
-    const { rpc, accumulator, program } = cashbackConnection({ swap: false, amount: 50000, pending })
+    const { rpc, accumulator, program } = cashbackConnection({ swap: false, amount: 200000, pending })
     const rows = await scanPumpRent(rpc, user)
     const preview = await prepareRentRecovery(rpc, user, 'pump', rows)
-    assert.equal(preview.gross, pending ? 50000 : rent + 50000)
+    assert.equal(preview.gross, pending ? 200000 : rent + 200000)
     assert.equal(preview.fee, pending ? 0 : 26924)
     const claim = preview.transaction.instructions[2]
     assert.deepEqual(claim.keys.map(k => k.pubkey.toBase58()), [user, accumulator, SystemProgram.programId, PublicKey.findProgramAddressSync([Buffer.from('__event_authority')], program)[0], program].map(k => k.toBase58()))

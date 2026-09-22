@@ -10,11 +10,12 @@ import { useToast } from '@/components/ui/use-toast'
 import { Flame, Zap, ExternalLink, CheckCircle } from 'lucide-react'
 import { addLeaderboardPoints } from '@/components/leaderboard'
 import { isProtectedBurnMint, scanBurnTokens, burnBlockReason, createCheckedBurnInstructions } from '@/lib/burn-protection'
+import { fixedPriorityInstructions, priorityFeeProblem, MAX_NETWORK_FEE_LAMPORTS } from '@/lib/priority-fee.mjs'
 
 // Fee wallet address
 const FEE_WALLET = new PublicKey('Dkmdvd9iZWKGXiSNExgYYX7PZNncewM4WqHBgN1knUzH')
 const FEE_PERCENTAGE = 2.0 // 2.0% fee
-const MIN_TRANSACTION_BALANCE_LAMPORTS = 10_000
+const MIN_TRANSACTION_BALANCE_LAMPORTS = MAX_NETWORK_FEE_LAMPORTS
 
 interface Token {
   address: string
@@ -399,7 +400,7 @@ export function TokenBurn() {
         console.log('💰 Required for fee:', (feeLamports + estimatedTransactionFee) / LAMPORTS_PER_SOL, 'SOL');
       }
 
-      const transaction = new Transaction()
+      const transaction = new Transaction().add(...fixedPriorityInstructions())
       
       // Add burn and close instructions for all selected tokens
       for (const token of tokensToBurn) {
@@ -439,6 +440,8 @@ export function TokenBurn() {
 
      // Sign first, then simulate the exact signed transaction.
 const signedTransaction = await signTransaction(transaction)
+const feeProblem = priorityFeeProblem(signedTransaction.compileMessage())
+if (feeProblem) throw new Error(`${feeProblem}. Nothing was sent.`)
 
 const signedBytes = signedTransaction.serialize()
 const simulation = await connection.simulateTransaction(VersionedTransaction.deserialize(signedBytes), { sigVerify: true, commitment: 'confirmed' })

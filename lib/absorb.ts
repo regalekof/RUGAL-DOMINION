@@ -2,6 +2,7 @@ import { Buffer } from 'buffer'
 import { ComputeBudgetProgram, Message, PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
 import type { AccountInfo, Connection } from '@solana/web3.js'
 import type { RecoveryDiagnostics } from './recovery-diagnostics'
+import { fixedPriorityInstructions, priorityFeeProblem, MAX_NETWORK_FEE_LAMPORTS } from './priority-fee.mjs'
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, NATIVE_MINT, getAssociatedTokenAddressSync, getExtensionTypes, getTransferFeeAmount, unpackAccount, createCloseAccountInstruction, createInitializeAccount3Instruction } from '@solana/spl-token'
 
 export type RentKind = 'token' | 'pump'
@@ -11,8 +12,7 @@ export const MAX_RENT_ACCOUNTS = 100
 export const RENT_PACKET_LIMIT = 1232
 // Leave room for wallet-added assertions. Final serialized size is still checked.
 export const RENT_BATCH_BYTE_TARGET = RENT_PACKET_LIMIT - 192
-export const MAX_RECOVERY_NETWORK_FEE = 10_000 // 0.00001 SOL, including the base fee
-const RECOVERY_BASE_FEE = 5_000 // One required signature; verify the total with RPC.
+export const MAX_RECOVERY_NETWORK_FEE = MAX_NETWORK_FEE_LAMPORTS // 0.00011 priority + 0.000005 base.
 const MAX_RECOVERY_COMPUTE_UNITS = 1_400_000
 // Phantom's documented transaction guards. Only the assertion-only variants
 // below are accepted, never MemoryWrite (0), MemoryClose (1), or unknown opcodes.
@@ -296,13 +296,7 @@ function buildRentTransaction(user: PublicKey, selected: RentAccount[], latest: 
   const transaction = new Transaction({ feePayer: user, ...latest })
   // Declare priority policy before signing so Phantom does not inject it later.
   // https://docs.phantom.com/developer-powertools/solana-priority-fees
-  // The network rounds priority charges UP to lamports; round the unit price
-  // DOWN so base + ceil(limit * price / 1e6) never exceeds the total cap.
-  const microLamports = Math.floor((MAX_RECOVERY_NETWORK_FEE - RECOVERY_BASE_FEE) * 1_000_000 / computeUnitLimit)
-  transaction.add(
-    ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
-    ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnitLimit }),
-  )
+  transaction.add(...fixedPriorityInstructions(computeUnitLimit))
   selected.forEach(account => {
     if (account.pump && account.pump.cashbackLamports > 0) {
       const swap = account.program === PUMP_PROGRAMS[1].id.toBase58()
@@ -410,28 +404,6 @@ async function prepareRentRecoveryOnce(connection: Connection, user: PublicKey, 
 
 export type RentPreview = Awaited<ReturnType<typeof prepareRentRecovery>>
 
-function computeBudgetProblem(message: Message): string | undefined {
-  let limit: number | undefined
-  let price: bigint | undefined
-  for (const instruction of message.compiledInstructions) {
-    if (!message.accountKeys[instruction.programIdIndex].equals(ComputeBudgetProgram.programId)) continue
-    const data = Buffer.from(instruction.data)
-    if (instruction.accountKeyIndexes.length) return 'invalid compute-budget accounts'
-    if (data[0] === 2 && data.length === 5 && limit === undefined) {
-      limit = data.readUInt32LE(1)
-    } else if (data[0] === 3 && data.length === 9 && price === undefined) {
-      price = data.readBigUInt64LE(1)
-    } else {
-      return 'unsupported or duplicate compute-budget instruction'
-    }
-  }
-  if (limit === undefined || price === undefined || limit < 1 || limit > MAX_RECOVERY_COMPUTE_UNITS) return 'invalid compute budget'
-  // Validate locally, without adding RPC waits. These recovery transactions
-  // require one signature, and no added signatures/programs are permitted.
-  const priority = (BigInt(limit) * price + BigInt(999_999)) / BigInt(1_000_000)
-  if (message.header.numRequiredSignatures !== 1 || BigInt(RECOVERY_BASE_FEE) + priority > BigInt(MAX_RECOVERY_NETWORK_FEE)) return 'network fee exceeds 0.00001 SOL cap'
-}
-
 function recoveryInstructionDifference(before: Message, after: Message): string | undefined {
   const beforeKeys = new Map(before.accountKeys.map((key, index) => [key.toBase58(), index]))
   const afterKeys = new Map(after.accountKeys.map((key, index) => [key.toBase58(), index]))
@@ -479,7 +451,7 @@ export function recoveryMessageDifference(expected: Uint8Array, actual: Uint8Arr
     const budget = (message: Message) => message.instructions.filter(ix => message.accountKeys[ix.programIdIndex].equals(ComputeBudgetProgram.programId)).map(ix => ix.data)
     const budgetChanged = JSON.stringify(budget(before)) !== JSON.stringify(budget(after))
     if (budgetChanged || after.instructions.some(ix => after.accountKeys[ix.programIdIndex].equals(LIGHTHOUSE_PROGRAM_ID))) {
-      const problem = computeBudgetProblem(after)
+      const problem = priorityFeeProblem(after)
       if (problem) return problem
       return recoveryInstructionDifference(before, after)
     }
