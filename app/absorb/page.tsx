@@ -10,7 +10,7 @@ import { SiteHeader } from '@/components/site-header'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { addLeaderboardPoints } from '@/components/leaderboard'
-import { MAX_RENT_ACCOUNTS, FEE_WALLET, rentTotals, estimatedRentLabel, createRentReview, prepareRentRecovery, scanRentCategories, selectRentBatch, submitRentRecovery } from '@/lib/absorb'
+import { MAX_RENT_ACCOUNTS, rentTotals, recoveryAmounts, estimatedRentLabel, createRentReview, prepareRentRecovery, scanRentCategories, selectRentBatch, submitRentRecovery } from '@/lib/absorb'
 import type { RentAccount, RentKind, RecoveryKind } from '@/lib/absorb'
 import { createRecoveryDiagnostics } from '@/lib/recovery-diagnostics'
 import type { RecoveryDiagnosticReport } from '@/lib/recovery-diagnostics'
@@ -208,9 +208,9 @@ export default function AbsorbPage() {
                       <span className={styles.selectedMark}><Check size={14} strokeWidth={3} /></span>
                     </span>
                     <span className={styles.choiceTitle}>{titles[type]}</span>
-                    <span className={styles.choiceSubtitle}>{type === 'token' ? 'SPL & Token-2022' : 'Pump account rent'}</span>
-                    <span className={styles.availableLabel}>{result.error ? 'Scan unavailable' : result.loading ? 'Scanning…' : 'Estimated rent'}</span>
-                    <span className={styles.amount}>{ready ? estimatedRentLabel(eligible.length) : '—'} <span>SOL</span></span>
+                    <span className={styles.choiceSubtitle}>{type === 'token' ? 'SPL & Token-2022' : 'Pump rent & cashback'}</span>
+                    <span className={styles.availableLabel}>{result.error ? 'Scan unavailable' : result.loading ? 'Scanning…' : type === 'pump' ? 'Recoverable SOL' : 'Estimated rent'}</span>
+                    <span className={styles.amount}>{ready ? type === 'pump' ? sol(rentTotals(eligible).gross) : estimatedRentLabel(eligible.length) : '—'} <span>SOL</span></span>
                     <span className={styles.count}>{ready ? `${eligible.length} eligible account${eligible.length === 1 ? '' : 's'}` : result.error ? 'Refresh to retry' : wallet ? 'Checking eligibility' : 'Connect to discover'}</span>
                     <span className={styles.selectionLabel}>{selectedKinds[type] ? 'Selected' : 'Select'}</span>
                   </button>
@@ -298,6 +298,10 @@ export default function AbsorbPage() {
           {review && <Card className={styles.detailsCard}>
             <CardHeader><h2 ref={reviewHeading} tabIndex={-1} className="text-xl font-semibold outline-none">Recover {review.accounts.length} account{review.accounts.length === 1 ? '' : 's'}</h2></CardHeader>
             <CardContent className="space-y-4 text-sm">
+              {review.accounts.some(account => (account.pump?.cashbackLamports ?? 0) > 0) && <p className="text-muted-foreground">
+                Includes {sol(review.accounts.reduce((sum, account) => sum + recoveryAmounts(account).cashback, 0))} SOL cashback. Cashback is claimed before eligible Pump accounts close.
+                {review.accounts.some(account => account.pump?.close === false) && ' Accounts with other pending rewards stay open.'}
+              </p>}
               <div className="flex flex-wrap gap-3"><Button onClick={() => void recover()} disabled={busy}>{busy ? progress : 'Approve in wallet'}</Button><Button variant="outline" onClick={() => setReview(null)} disabled={busy}>Cancel</Button></div>
             </CardContent>
           </Card>}

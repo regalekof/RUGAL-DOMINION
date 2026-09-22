@@ -2,8 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createRecoveryDiagnostics } from '../lib/recovery-diagnostics.ts'
 import { ComputeBudgetProgram, ComputeBudgetInstruction, Keypair, PublicKey, SystemProgram, SystemInstruction, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
-import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, AccountLayout, AccountState } from '@solana/spl-token'
-import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, MAX_RECOVERY_NETWORK_FEE, RENT_BATCH_BYTE_TARGET, LIGHTHOUSE_PROGRAM_ID, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, rentTotals, estimatedRentLabel, createRentReview, selectRentBatch, assertUnchanged, scanRentCategories, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery, recoveryMessageDifference, retryRecoveryRead } from '../lib/absorb.ts'
+import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, NATIVE_MINT, getAssociatedTokenAddressSync, AccountLayout, AccountState } from '@solana/spl-token'
+import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, MAX_RECOVERY_NETWORK_FEE, RENT_BATCH_BYTE_TARGET, LIGHTHOUSE_PROGRAM_ID, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, claimCashbackInstruction, recoveryAmounts, rentTotals, estimatedRentLabel, createRentReview, selectRentBatch, assertUnchanged, scanRentCategories, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery, recoveryMessageDifference, retryRecoveryRead } from '../lib/absorb.ts'
 
 const signer = Keypair.fromSeed(Uint8Array.from({ length: 32 }, (_, index) => index + 1))
 const user = signer.publicKey
@@ -33,18 +33,18 @@ test('PDA matches the user-supplied transaction and differs between programs', (
 
 test('only known, wallet-owned rent-only Pump layouts pass', () => {
   for (const { id } of PUMP_PROGRAMS) assert.equal(pumpBlockReason(pumpInfo(id), user, id, rent), undefined)
-  for (const change of [info => { info.owner = TOKEN_PROGRAM_ID }, info => { info.executable = true }, info => { info.data = Buffer.alloc(86) }, info => { info.data[0] = 0 }, info => { other.toBuffer().copy(info.data, 8) }, info => { info.data[136] = 1 }, info => { info.lamports++ }, info => { info.lamports-- }]) {
+  for (const change of [info => { info.owner = TOKEN_PROGRAM_ID }, info => { info.executable = true }, info => { info.data = Buffer.alloc(86) }, info => { info.data[0] = 0 }, info => { other.toBuffer().copy(info.data, 8) }, info => { info.data[136] = 1 }, info => { info.lamports-- }]) {
     const info = pumpInfo(); change(info)
     assert.ok(pumpBlockReason(info, user, PUMP_PROGRAMS[0].id, rent))
   }
 })
 
-test('Pump pending rewards, unsettled volume and both cashback currencies block closure', () => {
-  for (const offset of [40, 41, 57, 74, 90]) {
+test('Pump pending incentives, unsettled volume and unsupported quote rewards block closure', () => {
+  for (const offset of [40, 41, 57, 90]) {
     const info = pumpInfo(); info.data[offset] = 1
     assert.ok(pumpBlockReason(info, user, PUMP_PROGRAMS[0].id, rent))
   }
-  const info = pumpInfo(); info.data[49] = 1; info.data[73] = 1; info.data[82] = 1; info.data[98] = 1
+  const info = pumpInfo(); info.data[49] = 1; info.data[73] = 1; info.data[74] = 1; info.data[82] = 1; info.data[98] = 1
   assert.equal(pumpBlockReason(info, user, PUMP_PROGRAMS[0].id, rent), undefined, 'past claimed totals are not pending rewards')
 })
 
@@ -348,6 +348,154 @@ function lighthouseGuard(target = user) {
     data: Buffer.from([5, 0, 7, 0, 0]),
   })
 }
+
+function cashbackConnection({ swap = true, amount = 70701, pending = false, deposit = rent } = {}) {
+  const rpc = mockConnection(), program = PUMP_PROGRAMS[swap ? 1 : 0].id
+  const accumulator = pumpAddress(user, program)
+  const info = pumpInfo(program)
+  info.lamports = deposit + (swap ? 0 : amount)
+  info.data.writeBigUInt64LE(BigInt(amount), 74)
+  if (pending) info.data[40] = 1
+  const vault = getAssociatedTokenAddressSync(NATIVE_MINT, accumulator, true)
+  const vaultInfo = tokenInfo(TOKEN_PROGRAM_ID, { mint: NATIVE_MINT, owner: accumulator, amount: BigInt(amount), isNativeOption: 1, isNative: 1488440n })
+  vaultInfo.lamports = 1488440 + amount
+  rpc.getMultipleAccountsInfo = async keys => keys.map(key => key.equals(accumulator) ? info : key.equals(address) ? tokenInfo() : null)
+  rpc.getMinimumBalanceForRentExemption = async size => size === 165 ? 1488440 : rent
+  rpc.getBalance = async () => 10000000
+  rpc.getTokenAccountsByOwner = async (owner, { programId }) => ({ value: swap && owner.equals(accumulator) && programId.equals(TOKEN_PROGRAM_ID) ? [{ pubkey: vault, account: vaultInfo }] : [] })
+  return { rpc, info, vaultInfo, accumulator, vault, program }
+}
+
+test('higher historical Pump deposits recover their full balance', async () => {
+  for (const swap of [false, true]) {
+    const { rpc, info, program } = cashbackConnection({ swap, amount: 0, deposit: 1844400 })
+    assert.equal(pumpBlockReason(info, user, program, rent), undefined)
+    const rows = await scanPumpRent(rpc, user)
+    assert.equal(rows[0].blocked, undefined)
+    assert.deepEqual(recoveryAmounts(rows[0]), { rent: 1844400, cashback: 0 })
+    const preview = await prepareRentRecovery(rpc, user, 'pump', rows)
+    assert.equal(preview.gross, 1844400)
+    assert.equal(preview.fee, 36888)
+    assert.deepEqual([...preview.transaction.instructions[2].data], [249, 69, 164, 218, 150, 103, 84, 138])
+  }
+})
+
+test('PumpSwap cashback-only keeps accounts with pending incentives open', async () => {
+  const { rpc, accumulator, vault, program } = cashbackConnection({ amount: 2959639, pending: true })
+  const rows = await scanPumpRent(rpc, user)
+  assert.equal(rows[0].blocked, undefined)
+  assert.deepEqual(rows[0].pump, { cashbackLamports: 2959639, close: false })
+  const preview = await prepareRentRecovery(rpc, user, 'pump', rows)
+  assert.equal(preview.gross, 2959639)
+  assert.equal(preview.fee, 0, 'no rent recovered means no rent service fee')
+  const instructions = preview.transaction.instructions
+  const create = SystemInstruction.decodeCreateWithSeed(instructions[2])
+  assert.ok(create.fromPubkey.equals(user) && create.basePubkey.equals(user))
+  assert.ok(create.programId.equals(TOKEN_PROGRAM_ID)); assert.equal(create.space, 165)
+  assert.equal(create.seed.length, 32); assert.equal(create.lamports, 1488440)
+  assert.ok(create.newAccountPubkey.equals(await PublicKey.createWithSeed(user, create.seed, TOKEN_PROGRAM_ID)))
+  const walletAta = getAssociatedTokenAddressSync(NATIVE_MINT, user)
+  assert.ok(!create.newAccountPubkey.equals(walletAta))
+  assert.equal(instructions[3].data[0], 18, 'initializeAccount3')
+  assert.ok(instructions[3].keys[0].pubkey.equals(create.newAccountPubkey))
+  assert.ok(instructions[3].keys[1].pubkey.equals(NATIVE_MINT))
+  assert.deepEqual(instructions[3].data.subarray(1), user.toBuffer())
+  const claim = instructions[4]
+  assert.ok(claim.programId.equals(program))
+  assert.deepEqual([...claim.data], [37, 58, 35, 126, 190, 53, 228, 197])
+  assert.deepEqual(claim.keys.map(k => k.pubkey.toBase58()), [user, accumulator, NATIVE_MINT, TOKEN_PROGRAM_ID, vault, create.newAccountPubkey, SystemProgram.programId, PublicKey.findProgramAddressSync([Buffer.from('__event_authority')], program)[0], program].map(k => k.toBase58()))
+  assert.equal(instructions[5].data[0], 9)
+  assert.ok(instructions[5].keys[0].pubkey.equals(create.newAccountPubkey))
+  assert.ok(instructions[5].keys[1].pubkey.equals(user))
+  assert.equal(instructions.length, 6, 'no accumulator close or service transfer')
+  assert.equal(preview.transaction.compileMessage().header.numRequiredSignatures, 1)
+  assert.ok(preview.networkFee <= MAX_RECOVERY_NETWORK_FEE)
+  preview.transaction.sign(signer)
+  await submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {})
+})
+
+test('PumpSwap claims and unwraps cashback before closing the accumulator', async () => {
+  const { rpc, accumulator, vault } = cashbackConnection()
+  const rows = await scanPumpRent(rpc, user)
+  assert.deepEqual(rows[0].pump, { cashbackLamports: 70701, close: true })
+  const preview = await prepareRentRecovery(rpc, user, 'pump', rows)
+  assert.equal(preview.gross, rent + 70701)
+  assert.equal(preview.fee, 26924, 'cashback is not added to the rent fee base')
+  const close = preview.transaction.instructions[6]
+  assert.deepEqual([...close.data], [249, 69, 164, 218, 150, 103, 84, 138])
+  assert.ok(close.keys[1].pubkey.equals(accumulator))
+  assert.ok(!preview.transaction.instructions.some(ix => ix.programId.equals(TOKEN_PROGRAM_ID) && ix.data[0] === 9 && ix.keys[0].pubkey.equals(vault)), 'never close a Pump-owned vault')
+  assert.ok(selectRentBatch(rows, user).length === 1)
+  assert.ok(preview.transaction.serialize({ requireAllSignatures: false }).length <= RENT_BATCH_BYTE_TARGET)
+})
+
+test('native Pump cashback is not double counted and precedes optional closure', async () => {
+  for (const pending of [false, true]) {
+    const { rpc, accumulator, program } = cashbackConnection({ swap: false, amount: 50000, pending })
+    const rows = await scanPumpRent(rpc, user)
+    const preview = await prepareRentRecovery(rpc, user, 'pump', rows)
+    assert.equal(preview.gross, pending ? 50000 : rent + 50000)
+    assert.equal(preview.fee, pending ? 0 : 26924)
+    const claim = preview.transaction.instructions[2]
+    assert.deepEqual(claim.keys.map(k => k.pubkey.toBase58()), [user, accumulator, SystemProgram.programId, PublicKey.findProgramAddressSync([Buffer.from('__event_authority')], program)[0], program].map(k => k.toBase58()))
+    assert.equal(preview.transaction.instructions.length, pending ? 3 : 5)
+    assert.ok(preview.transaction.instructions.every(ix => !ix.programId.equals(TOKEN_PROGRAM_ID)))
+  }
+})
+
+test('cashback checks preserve other rewards, unsupported vaults and unknown layouts', async () => {
+  for (const offset of [40, 41, 57, 90]) {
+    const { rpc, info } = cashbackConnection({ swap: false })
+    info.data[offset] = 1
+    const [row] = await scanPumpRent(rpc, user)
+    assert.equal(row.blocked, undefined)
+    assert.equal(row.pump.close, false)
+  }
+  for (const mutate of [fixture => { fixture.info.data[136] = 1 }, fixture => { fixture.info.owner = other }, fixture => { fixture.vaultInfo.lamports++ }, fixture => { fixture.vaultInfo.data[108] = AccountState.Frozen }, fixture => { other.toBuffer().copy(fixture.vaultInfo.data, 32) }]) {
+    const fixture = cashbackConnection(); mutate(fixture)
+    assert.ok((await scanPumpRent(fixture.rpc, user))[0].blocked)
+  }
+  const { rpc, info } = cashbackConnection({ amount: 0 })
+  info.data.writeBigUInt64LE(84416610n, 74)
+  info.data.writeBigUInt64LE(88705895n, 82)
+  const [row] = await scanPumpRent(rpc, user)
+  assert.equal(row.blocked, undefined, 'historical counters from the user example do not prevent closure')
+  assert.equal(row.pump, undefined)
+})
+
+test('cashback amount or closure eligibility changes abort before sending', async () => {
+  for (const change of ['amount', 'eligibility']) {
+    const { rpc, info, vaultInfo } = cashbackConnection()
+    const rows = await scanPumpRent(rpc, user)
+    const preview = await prepareRentRecovery(rpc, user, 'pump', rows)
+    preview.transaction.sign(signer)
+    if (change === 'amount') { vaultInfo.data.writeBigUInt64LE(70702n, 64); vaultInfo.lamports++ } else info.data[40] = 1
+    await assert.rejects(submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {}), /changed/)
+    assert.equal(rpc.calls.filter(([name]) => name === 'send').length, 0)
+  }
+})
+
+test('cashback preparation requires refundable temporary rent and never reuses a temporary address', async () => {
+  const { rpc } = cashbackConnection()
+  const rows = await scanPumpRent(rpc, user)
+  rpc.getBalance = async () => 1488440
+  await assert.rejects(prepareRentRecovery(rpc, user, 'pump', rows), /temporarily available/)
+  rpc.getBalance = async () => 10000000
+  const first = await prepareRentRecovery(rpc, user, 'pump', rows)
+  const second = await prepareRentRecovery(rpc, user, 'pump', rows)
+  assert.notEqual(SystemInstruction.decodeCreateWithSeed(first.transaction.instructions[2]).newAccountPubkey.toBase58(), SystemInstruction.decodeCreateWithSeed(second.transaction.instructions[2]).newAccountPubkey.toBase58())
+})
+
+test('cashback review snapshots are deep copies and forged claims are rejected', async () => {
+  const { rpc } = cashbackConnection()
+  const rows = await scanPumpRent(rpc, user)
+  const review = createRentReview('pump', rows)
+  rows[0].pump.close = false
+  assert.equal(review.accounts[0].pump.close, true)
+  for (const row of [{ ...review.accounts[0], address: other.toBase58() }, { ...review.accounts[0], blocked: 'bad vault' }, { ...review.accounts[0], pump: { close: true, cashbackLamports: -1 } }]) assert.throws(() => claimCashbackInstruction(row, user, address), /Invalid/)
+  assert.throws(() => claimCashbackInstruction(review.accounts[0], user), /Missing temporary/)
+  assert.throws(() => rentTotals([{ ...tokenRow(), pump: { close: true, cashbackLamports: 1 } }]), /Invalid cashback program/)
+})
 
 test('diagnostics locate confirmation expiry without changing signed bytes or resending', async () => {
   const rpc = mockConnection()

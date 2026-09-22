@@ -19,7 +19,7 @@ Token burning scans both the original SPL Token Program and Token-2022, and uses
 Choose either card or select both:
 
 - **Accounts** — recover rent from eligible empty SPL Token and Token-2022 accounts.
-- **Pump Reward** — recover rent from eligible Pump.fun and PumpSwap user volume accounts. Despite its name, this is account-rent recovery, not a cashback or trading-reward claim.
+- **Pump Reward** — recover deposits from eligible Pump.fun and PumpSwap user volume accounts, claim native SOL/WSOL cashback, and claim cashback before closing eligible accounts in the same transaction. Accounts with other pending rewards remain open while supported cashback can still be claimed.
 
 Both categories can be recovered together in **one transaction per batch**, with one wallet signature. The account cap is **100**, but batches are sized to fit Solana's transaction packet limit with room reserved for wallet safety assertions; the actual account count is usually lower. Eligible Pump accounts are prioritised when both categories are selected; remaining token accounts stay available for another batch.
 
@@ -47,7 +47,8 @@ The cards display a simplified estimate of `0.0015 SOL × eligible account count
 - Only eligible empty token accounts enter rent recovery; nonzero token balances and native/wrapped SOL accounts are excluded.
 - Account ownership, close authority, and withheld token balances are checked. Empty token accounts are no longer excluded just because they have extensions; the owning Token program's extension-specific close rules are checked through transaction simulation. Pump reward-vault extension checks remain conservative.
 - Pump accounts are derived for the connected wallet and validated against the supported program owners, account discriminator, and 137-byte layout.
-- Pending rewards, unsettled trading volume, unexpected account fields, extra SOL, and funded or unreviewed reward vaults block Pump rent recovery.
+- Higher-than-current rent deposits are supported; recoverable amounts come from actual account balances. Unsupported layouts and unexpected fields remain blocked. Pending token incentives, unsettled trading volume, non-SOL rewards, and unreviewed vault states prevent account closure rather than discarding those rewards.
+- PumpSwap cashback uses a fresh temporary WSOL account, closed back to the connected wallet in the same transaction. Existing wallet WSOL accounts and Pump-owned vaults are never closed. The temporary account deposit must be available upfront and is returned atomically. Cashback balances and claim-versus-close actions are rechecked before submission.
 - Opening the review uses the scanned account snapshot without extra RPC calls or simulation. The exact reviewed accounts are checked once before signing and again after wallet approval; an unsigned blockhash-expiry retry may repeat preparation.
 - Absorb simulates transactions, preserves the signed payload, and submits with preflight enabled. Success is shown only after error-free confirmation.
 - Wallet or connection changes prevent stale recovery submissions. A submitted transaction link remains available when confirmation is uncertain.

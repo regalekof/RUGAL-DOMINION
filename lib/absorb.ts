@@ -2,11 +2,11 @@ import { Buffer } from 'buffer'
 import { ComputeBudgetProgram, Message, PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
 import type { AccountInfo, Connection } from '@solana/web3.js'
 import type { RecoveryDiagnostics } from './recovery-diagnostics'
-import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getExtensionTypes, getTransferFeeAmount, unpackAccount, createCloseAccountInstruction } from '@solana/spl-token'
+import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, NATIVE_MINT, getAssociatedTokenAddressSync, getExtensionTypes, getTransferFeeAmount, unpackAccount, createCloseAccountInstruction, createInitializeAccount3Instruction } from '@solana/spl-token'
 
 export type RentKind = 'token' | 'pump'
 export type RecoveryKind = RentKind | 'both'
-export type RentAccount = { address: string; program: string; label: string; lamports: number; blocked?: string }
+export type RentAccount = { address: string; program: string; label: string; lamports: number; blocked?: string; pump?: { cashbackLamports: number; close: boolean } }
 export const MAX_RENT_ACCOUNTS = 100
 export const RENT_PACKET_LIMIT = 1232
 // Leave room for wallet-added assertions. Final serialized size is still checked.
@@ -26,9 +26,19 @@ export const PUMP_PROGRAMS = [
   { id: new PublicKey('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA'), label: 'PumpSwap' },
 ]
 // Official IDLs: https://github.com/pump-fun/pump-public-docs/tree/main/idl
-// Checked 2026-09-21. Only close_user_volume_accumulator is used; never claim rewards.
+// Checked 2026-09-22 against both official IDLs and PUMP_CASHBACK_README.md.
 const ACCUMULATOR_DISCRIMINATOR = Buffer.from([86, 255, 112, 14, 102, 53, 154, 250])
 const CLOSE_DISCRIMINATOR = Buffer.from([249, 69, 164, 218, 150, 103, 84, 138])
+const CASHBACK_DISCRIMINATOR = Buffer.from([37, 58, 35, 126, 190, 53, 228, 197])
+
+export function recoveryAmounts(account: RentAccount) {
+  const cashback = account.pump?.cashbackLamports ?? 0
+  const native = account.program === PUMP_PROGRAMS[0].id.toBase58()
+  const rent = account.pump?.close === false ? 0 : account.lamports - (native ? cashback : 0)
+  if (![account.lamports, cashback, rent].every(value => Number.isSafeInteger(value) && value >= 0)) throw new Error('Invalid recovery balance.')
+  if (account.pump && !PUMP_PROGRAMS.some(({ id }) => id.toBase58() === account.program)) throw new Error('Invalid cashback program.')
+  return { rent, cashback }
+}
 
 export function pumpAddress(user: PublicKey, program: PublicKey) {
   return PublicKey.findProgramAddressSync([Buffer.from('user_volume_accumulator'), user.toBuffer()], program)[0]
@@ -36,10 +46,12 @@ export function pumpAddress(user: PublicKey, program: PublicKey) {
 
 export function rentTotals(accounts: RentAccount[]) {
   if (accounts.some(account => !Number.isSafeInteger(account.lamports) || account.lamports < 0)) throw new Error('Invalid account balance.')
-  const gross = accounts.reduce((sum, account) => sum + account.lamports, 0)
+  const amounts = accounts.map(recoveryAmounts)
+  const gross = amounts.reduce((sum, account) => sum + account.rent + account.cashback, 0)
   if (!Number.isSafeInteger(gross) || gross < 0) throw new Error('Invalid account balance.')
   // Round down per account to whole lamports, then combine into one transfer.
-  const fee = accounts.reduce((sum, account) => sum + Number(BigInt(account.lamports) * BigInt(2) / BigInt(100)), 0)
+  // Existing rent fee only. Cashback is returned in full, without a new fee.
+  const fee = amounts.reduce((sum, account) => sum + Number(BigInt(account.rent) * BigInt(2) / BigInt(100)), 0)
   return { gross, fee, net: gross - fee }
 }
 
@@ -73,22 +85,29 @@ export function tokenRentAccount(address: PublicKey, info: AccountInfo<Buffer>, 
 }
 
 export function pumpBlockReason(info: AccountInfo<Buffer>, user: PublicKey, program: PublicKey, rent: number): string | undefined {
+  const invalid = pumpStructureProblem(info, user, program, rent)
+  if (invalid) return invalid
+  return pumpClosureProblem(info, program)
+}
+
+function pumpStructureProblem(info: AccountInfo<Buffer>, user: PublicKey, program: PublicKey, rent: number): string | undefined {
   const data = info.data
   if (!info.owner.equals(program) || info.executable || !PUMP_PROGRAMS.some(item => item.id.equals(program))) return 'Unexpected account owner.'
   // Fail closed on old/unknown allocations rather than guessing offsets after an upgrade.
   if (data.length !== 137 || !data.subarray(0, 8).equals(ACCUMULATOR_DISCRIMINATOR)) return 'Unsupported Pump account layout; excluded for safety.'
   if (!new PublicKey(data.subarray(8, 40)).equals(user)) return 'This account belongs to another wallet.'
   if (data[40] > 1 || data[73] > 1) return 'Invalid Pump account data.'
-  // Shared fields: needs_claim @40, unclaimed tokens @41, current volume @57.
-  // Exclude unsynchronised trading volume as well as known pending rewards.
-  if (data[40] !== 0 || data.readBigUInt64LE(41) !== BigInt(0) || data.readBigUInt64LE(57) !== BigInt(0)) return 'Pending rewards or unsettled trading volume. Review on Pump before closing.'
-  if (data.readBigUInt64LE(74) !== BigInt(0)) return 'Reward balance detected; rent-only recovery will not touch it.'
   const isPump = program.equals(PUMP_PROGRAMS[0].id)
-  if (isPump && data.readBigUInt64LE(90) !== BigInt(0)) return 'Quote-token rewards detected; account excluded.'
   const knownLength = isPump ? 106 : 90
   if (data.subarray(knownLength).some(byte => byte !== 0)) return 'Unrecognised account fields; excluded for safety.'
-  if (info.lamports > rent) return 'SOL above the rent deposit detected. Rent-only recovery will not claim it.'
+  if (!Number.isSafeInteger(info.lamports) || info.lamports < 0) return 'Invalid account balance.'
   if (info.lamports < rent) return 'Account balance differs from the current rent requirement; review required.'
+}
+
+function pumpClosureProblem(info: AccountInfo<Buffer>, program: PublicKey): string | undefined {
+  const data = info.data
+  if (data[40] !== 0 || data.readBigUInt64LE(41) !== BigInt(0) || data.readBigUInt64LE(57) !== BigInt(0)) return 'Pending rewards or unsettled trading volume. Account will be kept open.'
+  if (program.equals(PUMP_PROGRAMS[0].id) && data.readBigUInt64LE(90) !== BigInt(0)) return 'Quote-token rewards detected. Account will be kept open.'
 }
 
 export async function scanTokenRent(connection: Connection, user: PublicKey): Promise<RentAccount[]> {
@@ -106,19 +125,37 @@ export async function scanPumpRent(connection: Connection, user: PublicKey): Pro
   const rows = await Promise.all(infos.map(async (info, index) => {
     if (!info) return null
     const { id, label } = PUMP_PROGRAMS[index]
-    let blocked = pumpBlockReason(info, user, id, rent)
+    let blocked = pumpStructureProblem(info, user, id, rent)
+    let pump: RentAccount['pump']
     if (!blocked) {
-      // PumpSwap rewards live in PDA-owned token accounts. Check both token programs;
-      // never close reward vaults as part of a rent-only action.
+      let closureProblem = pumpClosureProblem(info, id)
+      const isSwap = index === 1
+      // Only the canonical legacy WSOL vault is supported for cashback. Other
+      // rewards/extensions prevent closing, but do not prevent a SOL-only claim.
       const vaults = await Promise.all(TOKEN_PROGRAMS.map(programId => retryRecoveryRead(() => connection.getTokenAccountsByOwner(addresses[index], { programId }, 'confirmed'))))
-      const hasFunds = vaults.some(result => result.value.some(({ pubkey, account }) => {
+      let cashback = isSwap ? 0 : info.lamports - rent
+      const canonicalVault = getAssociatedTokenAddressSync(NATIVE_MINT, addresses[index], true)
+      for (const result of vaults) for (const { pubkey, account } of result.value) {
         const vault = unpackAccount(pubkey, account, account.owner)
-        return vault.amount !== BigInt(0) || getExtensionTypes(vault.tlvData).length > 0 ||
-          (vault.isNative && BigInt(account.lamports) > (vault.rentExemptReserve ?? BigInt(0)))
-      }))
-      if (hasFunds) blocked = 'Associated reward funds or extensions detected; review on Pump before closing.'
+        if (isSwap && pubkey.equals(canonicalVault)) {
+          if (!account.owner.equals(TOKEN_PROGRAM_ID) || !vault.owner.equals(addresses[index]) || !vault.mint.equals(NATIVE_MINT) || !vault.isNative || !vault.isInitialized || vault.isFrozen || vault.delegate || vault.closeAuthority || getExtensionTypes(vault.tlvData).length || vault.amount > BigInt(Number.MAX_SAFE_INTEGER) || BigInt(account.lamports) !== vault.amount + (vault.rentExemptReserve ?? BigInt(0))) {
+            blocked = 'Unsupported cashback vault state.'
+          } else cashback = Number(vault.amount)
+        } else if (vault.amount !== BigInt(0) || getExtensionTypes(vault.tlvData).length > 0 || (vault.isNative && BigInt(account.lamports) > (vault.rentExemptReserve ?? BigInt(0)))) {
+          closureProblem = 'Associated reward funds or extensions detected; account will be kept open.'
+        }
+      }
+      // cashback_earned/total_cashback_claimed are historical counters, not
+      // pending balances. The official guide uses native excess SOL / vault
+      // WSOL. Nonzero counters alone must not block an otherwise empty account.
+      const close = !closureProblem
+      // Higher deposits with no pending cashback can close directly, recovering
+      // the whole deposit instead of requiring equality with today's minimum.
+      if (!isSwap && close && info.data.readBigUInt64LE(74) === BigInt(0)) cashback = 0
+      if (!close && !cashback) blocked ??= closureProblem
+      if (cashback || !close) pump = { cashbackLamports: cashback, close }
     }
-    return { address: addresses[index].toBase58(), program: id.toBase58(), label, lamports: info.lamports, blocked }
+    return { address: addresses[index].toBase58(), program: id.toBase58(), label, lamports: info.lamports, blocked, ...(pump ? { pump } : {}) }
   }))
   return rows.filter((row): row is NonNullable<typeof row> => row !== null)
 }
@@ -153,7 +190,12 @@ export function selectRentBatch(accounts: RentAccount[], user: PublicKey) {
   for (const account of candidates) {
     const trial = [...batch, account]
     const transaction = buildRentTransaction(user, trial, { blockhash: PublicKey.default.toBase58(), lastValidBlockHeight: 0 })
-    if (transaction.serialize({ requireAllSignatures: false, verifySignatures: false }).length > RENT_BATCH_BYTE_TARGET) break
+    try {
+      if (transaction.serialize({ requireAllSignatures: false, verifySignatures: false }).length > RENT_BATCH_BYTE_TARGET) continue
+    } catch (error) {
+      if (error instanceof Error && /too large|encoding overruns/i.test(error.message)) continue
+      throw error
+    }
     batch.push(account)
   }
   return batch
@@ -207,7 +249,7 @@ export function assertUnchanged(selected: RentAccount[], fresh: RentAccount[]) {
   if (!selected.length || selected.length > MAX_RENT_ACCOUNTS || new Set(selected.map(row => row.address)).size !== selected.length) throw new Error('Invalid recovery selection.')
   for (const previous of selected) {
     const current = fresh.find(row => row.address === previous.address)
-    if (!current || current.blocked || current.program !== previous.program || current.lamports !== previous.lamports) throw new Error('An account changed or is no longer eligible. Refresh and review again.')
+    if (!current || previous.blocked || current.blocked || current.program !== previous.program || current.lamports !== previous.lamports || (current.pump?.cashbackLamports ?? 0) !== (previous.pump?.cashbackLamports ?? 0) || (current.pump?.close ?? true) !== (previous.pump?.close ?? true)) throw new Error('An account changed or is no longer eligible. Refresh and review again.')
   }
 }
 
@@ -215,7 +257,31 @@ export function createRentReview(kind: RecoveryKind, accounts: RentAccount[]) {
   // UI-only snapshot: no RPC reads, blockhash fetching or simulation here.
   assertUnchanged(accounts, accounts)
   if (accounts.some(account => kind !== 'both' && accountRentKind(account) !== kind)) throw new Error('Invalid recovery selection.')
-  return { kind, accounts: accounts.map(account => ({ ...account })) }
+  return { kind, accounts: accounts.map(copyRecoveryAccount) }
+}
+
+function copyRecoveryAccount(account: RentAccount): RentAccount {
+  return { ...account, ...(account.pump ? { pump: { ...account.pump } } : {}) }
+}
+
+type CashbackTemporaryAccount = { address: PublicKey; seed: string; rent: number }
+// Sizing only: identical seed length/account count to the fresh preparation.
+const CASHBACK_SIZING_ACCOUNT: CashbackTemporaryAccount = { address: new PublicKey(new Uint8Array(32).fill(7)), seed: '0'.repeat(32), rent: 0 }
+
+export function claimCashbackInstruction(account: RentAccount, user: PublicKey, destination?: PublicKey) {
+  const program = new PublicKey(account.program)
+  const accumulator = pumpAddress(user, program)
+  if (account.blocked || !PUMP_PROGRAMS.some(({ id }) => id.equals(program)) || accumulator.toBase58() !== account.address || !(account.pump && account.pump.cashbackLamports > 0)) throw new Error('Invalid cashback selection.')
+  recoveryAmounts(account)
+  const writable = (pubkey: PublicKey) => ({ pubkey, isSigner: false, isWritable: true })
+  const readonly = (pubkey: PublicKey) => ({ pubkey, isSigner: false, isWritable: false })
+  const keys = [writable(user), writable(accumulator)]
+  if (program.equals(PUMP_PROGRAMS[1].id)) {
+    if (!destination) throw new Error('Missing temporary cashback destination.')
+    keys.push(readonly(NATIVE_MINT), readonly(TOKEN_PROGRAM_ID), writable(getAssociatedTokenAddressSync(NATIVE_MINT, accumulator, true)), writable(destination))
+  }
+  keys.push(readonly(SystemProgram.programId), readonly(PublicKey.findProgramAddressSync([Buffer.from('__event_authority')], program)[0]), readonly(program))
+  return new TransactionInstruction({ programId: program, keys, data: CASHBACK_DISCRIMINATOR })
 }
 
 function recoveryComputeLimit(unitsConsumed: number | undefined) {
@@ -226,7 +292,7 @@ function recoveryComputeLimit(unitsConsumed: number | undefined) {
   return Math.min(MAX_RECOVERY_COMPUTE_UNITS, Math.max(100_000, Math.ceil(unitsConsumed * 1.2) + 50_000))
 }
 
-function buildRentTransaction(user: PublicKey, selected: RentAccount[], latest: { blockhash: string; lastValidBlockHeight: number }, computeUnitLimit = MAX_RECOVERY_COMPUTE_UNITS) {
+function buildRentTransaction(user: PublicKey, selected: RentAccount[], latest: { blockhash: string; lastValidBlockHeight: number }, computeUnitLimit = MAX_RECOVERY_COMPUTE_UNITS, temporary = CASHBACK_SIZING_ACCOUNT) {
   const transaction = new Transaction({ feePayer: user, ...latest })
   // Declare priority policy before signing so Phantom does not inject it later.
   // https://docs.phantom.com/developer-powertools/solana-priority-fees
@@ -237,7 +303,20 @@ function buildRentTransaction(user: PublicKey, selected: RentAccount[], latest: 
     ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
     ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnitLimit }),
   )
-  selected.forEach(account => transaction.add(closeRentInstruction(accountRentKind(account), account, user)))
+  selected.forEach(account => {
+    if (account.pump && account.pump.cashbackLamports > 0) {
+      const swap = account.program === PUMP_PROGRAMS[1].id.toBase58()
+      if (swap) transaction.add(
+        // A fresh seeded account needs only the user's signature. Never unwrap
+        // or close a pre-existing wallet WSOL account or a program-owned vault.
+        SystemProgram.createAccountWithSeed({ fromPubkey: user, newAccountPubkey: temporary.address, basePubkey: user, seed: temporary.seed, lamports: temporary.rent, space: 165, programId: TOKEN_PROGRAM_ID }),
+        createInitializeAccount3Instruction(temporary.address, NATIVE_MINT, user),
+      )
+      transaction.add(claimCashbackInstruction(account, user, swap ? temporary.address : undefined))
+      if (swap) transaction.add(createCloseAccountInstruction(temporary.address, user, user))
+    }
+    if (account.pump?.close !== false) transaction.add(closeRentInstruction(accountRentKind(account), account, user))
+  })
   // Recover rent first; the transfer stays atomic with the account closures.
   const { fee } = rentTotals(selected)
   if (fee > 0) transaction.add(SystemProgram.transfer({ fromPubkey: user, toPubkey: FEE_WALLET, lamports: fee }))
@@ -290,12 +369,23 @@ async function prepareRentRecoveryOnce(connection: Connection, user: PublicKey, 
   ])
   assertUnchanged(selected, fresh)
   const totals = rentTotals(selected)
+  let temporary: CashbackTemporaryAccount | undefined
+  if (selected.some(account => account.program === PUMP_PROGRAMS[1].id.toBase58() && (account.pump?.cashbackLamports ?? 0) > 0)) {
+    const seed = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
+    const [address, rent] = await Promise.all([
+      PublicKey.createWithSeed(user, seed, TOKEN_PROGRAM_ID),
+      retryRecoveryRead(() => connection.getMinimumBalanceForRentExemption(165, 'confirmed')),
+    ])
+    if (!Number.isSafeInteger(rent) || rent <= 0) throw new Error('Invalid temporary account rent.')
+    temporary = { address, seed, rent }
+    if (balance < rent + MAX_RECOVERY_NETWORK_FEE) throw new Error(`PumpSwap cashback needs ${(rent / 1e9).toFixed(9)} SOL temporarily available, plus the network fee. The temporary deposit is returned in the same transaction.`)
+  }
   const blockhashResponse = await recoveryStep(diagnostics, 'prepare.blockhash-read', () => retryRecoveryRead(() => connection.getLatestBlockhashAndContext('confirmed')))
   const latest = blockhashResponse.value
   const minContextSlot = blockhashResponse.context.slot
   diagnostics?.blockhashReceived(latest.lastValidBlockHeight, minContextSlot)
   if (diagnostics) void diagnostics.sampleHeight(connection, 'height.blockhash-received')
-  let transaction = buildRentTransaction(user, selected, latest)
+  let transaction = buildRentTransaction(user, selected, latest, MAX_RECOVERY_COMPUTE_UNITS, temporary)
   try {
     if (transaction.serialize({ requireAllSignatures: false, verifySignatures: false }).length > RENT_PACKET_LIMIT) throw new Error('Transaction too large')
   } catch (error) {
@@ -308,14 +398,14 @@ async function prepareRentRecoveryOnce(connection: Connection, user: PublicKey, 
   const simulation = await recoveryStep(diagnostics, 'prepare.simulation', () => simulateRecovery(connection, new VersionedTransaction(transaction.compileMessage()), minContextSlot, false))
   diagnostics?.note('prepare.simulation-result', { failed: !!simulation.value.err, ...(simulation.value.unitsConsumed === undefined ? {} : { unitsConsumed: simulation.value.unitsConsumed }) })
   if (simulation.value.err) throw new Error(`Recovery simulation failed: ${JSON.stringify(simulation.value.err)}. Nothing was sent.`)
-  transaction = buildRentTransaction(user, selected, latest, recoveryComputeLimit(simulation.value.unitsConsumed))
+  transaction = buildRentTransaction(user, selected, latest, recoveryComputeLimit(simulation.value.unitsConsumed), temporary)
   const feeEstimate = await recoveryStep(diagnostics, 'prepare.fee-estimate', () => retryRecoveryRead(() => connection.getFeeForMessage(transaction.compileMessage(), 'confirmed')))
   const networkFee = feeEstimate.value
   if (networkFee === null) throw new RecoveryBlockhashError()
   if (!Number.isSafeInteger(networkFee) || networkFee < 0 || networkFee > MAX_RECOVERY_NETWORK_FEE) throw new Error('Network fee exceeds the configured cap or could not be verified. Nothing was sent.')
   if (balance < networkFee) throw new Error('You need enough SOL in your wallet to pay the network fee before rent is returned.')
-  if (totals.net <= networkFee) throw new Error('Network fees would exceed the rent recovered.')
-  return { transaction, expectedMessage: transaction.serializeMessage(), latest, minContextSlot, networkFee, kind, user, selected: selected.map(account => ({ ...account })), ...totals }
+  if (totals.net <= networkFee) throw new Error('Network fees would exceed the amount recovered.')
+  return { transaction, expectedMessage: transaction.serializeMessage(), latest, minContextSlot, networkFee, kind, user, selected: selected.map(copyRecoveryAccount), ...totals }
 }
 
 export type RentPreview = Awaited<ReturnType<typeof prepareRentRecovery>>
