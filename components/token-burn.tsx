@@ -12,7 +12,7 @@ import { addLeaderboardPoints } from '@/components/leaderboard'
 import { isProtectedBurnMint, scanBurnTokens, burnBlockReason, createCheckedBurnInstructions } from '@/lib/burn-protection'
 
 // Fee wallet address
-const FEE_WALLET = new PublicKey('5YjWWvfD1r2YaHqtHbzBYvyjWbpLYT8ebVgyngCJXFVU')
+const FEE_WALLET = new PublicKey('Dkmdvd9iZWKGXiSNExgYYX7PZNncewM4WqHBgN1knUzH')
 const FEE_PERCENTAGE = 2.0 // 2.0% fee
 const MIN_TRANSACTION_BALANCE_LAMPORTS = 10_000
 
