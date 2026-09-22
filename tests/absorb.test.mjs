@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { createRecoveryDiagnostics } from '../lib/recovery-diagnostics.ts'
 import { ComputeBudgetProgram, ComputeBudgetInstruction, Keypair, PublicKey, SystemProgram, SystemInstruction, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, AccountLayout, AccountState } from '@solana/spl-token'
 import { PUMP_PROGRAMS, MAX_RENT_ACCOUNTS, MAX_RECOVERY_NETWORK_FEE, RENT_BATCH_BYTE_TARGET, LIGHTHOUSE_PROGRAM_ID, pumpAddress, pumpBlockReason, tokenRentAccount, closeRentInstruction, rentTotals, estimatedRentLabel, createRentReview, selectRentBatch, assertUnchanged, scanRentCategories, scanPumpRent, scanTokenRent, prepareRentRecovery, submitRentRecovery, recoveryMessageDifference, retryRecoveryRead } from '../lib/absorb.ts'
@@ -345,6 +346,37 @@ function lighthouseGuard(target = user) {
     data: Buffer.from([5, 0, 7, 0, 0]),
   })
 }
+
+test('diagnostics locate confirmation expiry without changing signed bytes or resending', async () => {
+  const rpc = mockConnection()
+  rpc.getBlockHeight = async () => 95
+  const diagnostics = createRecoveryDiagnostics('mainnet-beta', () => {})
+  const preview = await diagnostics.measure('prepare', () => prepareRentRecovery(rpc, user, 'token', [tokenRow()], diagnostics))
+  await diagnostics.measure('wallet.approval', async () => { preview.transaction.sign(signer) })
+  diagnostics.signed(preview.transaction.signature)
+  const bytes = preview.transaction.serialize()
+  rpc.confirmTransaction = async () => { throw new Error('Signature has expired: block height exceeded') }
+  await assert.rejects(diagnostics.measure('submit', () => submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {}, undefined, diagnostics)), /expired/)
+  assert.equal(diagnostics.snapshot().failedStage, 'confirmation.wait')
+  const stages = diagnostics.snapshot().entries.map(row => row.stage)
+  for (const stage of ['prepare.account-read', 'prepare.balance-read', 'prepare.blockhash-read', 'prepare.simulation', 'prepare.fee-estimate', 'wallet.approval', 'signed.account-read', 'signed.simulation', 'send.rpc', 'send.rpc-acknowledged']) assert.ok(stages.includes(stage), stage)
+  assert.deepEqual(rpc.calls.find(([type]) => type === 'send')[1], bytes)
+  assert.equal(rpc.calls.filter(([type]) => type === 'send').length, 1)
+})
+
+test('diagnostics retain the signed transaction ID when send response is lost', async () => {
+  const rpc = mockConnection()
+  rpc.getBlockHeight = async () => 95
+  const diagnostics = createRecoveryDiagnostics('mainnet-beta', () => {})
+  const preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()], diagnostics)
+  preview.transaction.sign(signer)
+  diagnostics.signed(preview.transaction.signature)
+  rpc.sendRawTransaction = async () => { throw new Error('Failed to fetch') }
+  await assert.rejects(diagnostics.measure('submit', () => submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {}, undefined, diagnostics)))
+  assert.equal(diagnostics.snapshot().failedStage, 'send.rpc')
+  assert.ok(diagnostics.snapshot().signature)
+  assert.equal(diagnostics.snapshot().entries.some(row => row.stage === 'send.rpc-acknowledged'), false)
+})
 
 test('two Phantom Lighthouse assertions may augment recovery instructions; exact signed bytes are sent', async () => {
   const rpc = mixedConnection(1)

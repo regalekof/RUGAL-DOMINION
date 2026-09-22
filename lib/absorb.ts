@@ -1,6 +1,7 @@
 import { Buffer } from 'buffer'
 import { ComputeBudgetProgram, Message, PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
 import type { AccountInfo, Connection } from '@solana/web3.js'
+import type { RecoveryDiagnostics } from './recovery-diagnostics'
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getExtensionTypes, getTransferFeeAmount, unpackAccount, createCloseAccountInstruction } from '@solana/spl-token'
 
 export type RentKind = 'token' | 'pump'
@@ -268,25 +269,32 @@ async function simulateRecovery(connection: Connection, transaction: VersionedTr
   throw new RecoveryBlockhashError()
 }
 
-export async function prepareRentRecovery(connection: Connection, user: PublicKey, kind: RecoveryKind, selected: RentAccount[]) {
+function recoveryStep<T>(diagnostics: RecoveryDiagnostics | undefined, stage: string, run: () => Promise<T>) {
+  return diagnostics ? diagnostics.measure(stage, run) : run()
+}
+
+export async function prepareRentRecovery(connection: Connection, user: PublicKey, kind: RecoveryKind, selected: RentAccount[], diagnostics?: RecoveryDiagnostics) {
   // Only unsigned preparation may rebuild automatically, once. All account
   // checks, fee estimates and simulation run again on the new transaction.
-  try { return await prepareRentRecoveryOnce(connection, user, kind, selected) } catch (error) {
+  try { return await prepareRentRecoveryOnce(connection, user, kind, selected, diagnostics) } catch (error) {
     if (!(error instanceof RecoveryBlockhashError)) throw error
-    return prepareRentRecoveryOnce(connection, user, kind, selected)
+    diagnostics?.retrying()
+    return prepareRentRecoveryOnce(connection, user, kind, selected, diagnostics)
   }
 }
 
-async function prepareRentRecoveryOnce(connection: Connection, user: PublicKey, kind: RecoveryKind, selected: RentAccount[]) {
+async function prepareRentRecoveryOnce(connection: Connection, user: PublicKey, kind: RecoveryKind, selected: RentAccount[], diagnostics?: RecoveryDiagnostics) {
   const [fresh, balance] = await Promise.all([
-    scanRecoveryRent(connection, user, kind, selected),
-    retryRecoveryRead(() => connection.getBalance(user, 'confirmed')),
+    recoveryStep(diagnostics, 'prepare.account-read', () => scanRecoveryRent(connection, user, kind, selected)),
+    recoveryStep(diagnostics, 'prepare.balance-read', () => retryRecoveryRead(() => connection.getBalance(user, 'confirmed'))),
   ])
   assertUnchanged(selected, fresh)
   const totals = rentTotals(selected)
-  const blockhashResponse = await retryRecoveryRead(() => connection.getLatestBlockhashAndContext('confirmed'))
+  const blockhashResponse = await recoveryStep(diagnostics, 'prepare.blockhash-read', () => retryRecoveryRead(() => connection.getLatestBlockhashAndContext('confirmed')))
   const latest = blockhashResponse.value
   const minContextSlot = blockhashResponse.context.slot
+  diagnostics?.blockhashReceived(latest.lastValidBlockHeight, minContextSlot)
+  if (diagnostics) void diagnostics.sampleHeight(connection, 'height.blockhash-received')
   let transaction = buildRentTransaction(user, selected, latest)
   try {
     if (transaction.serialize({ requireAllSignatures: false, verifySignatures: false }).length > RENT_PACKET_LIMIT) throw new Error('Transaction too large')
@@ -297,10 +305,11 @@ async function prepareRentRecoveryOnce(connection: Connection, user: PublicKey, 
   // Measure with the full compute limit, then price the final unsigned message.
   // No extra RPC calls are added; the exact signed message is
   // still simulated after wallet approval, including any Lighthouse guards.
-  const simulation = await simulateRecovery(connection, new VersionedTransaction(transaction.compileMessage()), minContextSlot, false)
+  const simulation = await recoveryStep(diagnostics, 'prepare.simulation', () => simulateRecovery(connection, new VersionedTransaction(transaction.compileMessage()), minContextSlot, false))
+  diagnostics?.note('prepare.simulation-result', { failed: !!simulation.value.err, ...(simulation.value.unitsConsumed === undefined ? {} : { unitsConsumed: simulation.value.unitsConsumed }) })
   if (simulation.value.err) throw new Error(`Recovery simulation failed: ${JSON.stringify(simulation.value.err)}. Nothing was sent.`)
   transaction = buildRentTransaction(user, selected, latest, recoveryComputeLimit(simulation.value.unitsConsumed))
-  const feeEstimate = await retryRecoveryRead(() => connection.getFeeForMessage(transaction.compileMessage(), 'confirmed'))
+  const feeEstimate = await recoveryStep(diagnostics, 'prepare.fee-estimate', () => retryRecoveryRead(() => connection.getFeeForMessage(transaction.compileMessage(), 'confirmed')))
   const networkFee = feeEstimate.value
   if (networkFee === null) throw new RecoveryBlockhashError()
   if (!Number.isSafeInteger(networkFee) || networkFee < 0 || networkFee > MAX_RECOVERY_NETWORK_FEE) throw new Error('Network fee exceeds the configured cap or could not be verified. Nothing was sent.')
@@ -400,25 +409,31 @@ export function recoveryMessageDifference(expected: Uint8Array, actual: Uint8Arr
   }
 }
 
-export async function submitRentRecovery(connection: Connection, signed: Transaction, preview: RentPreview, stillCurrent: () => boolean, onSent: (signature: string) => void, onProgress?: (stage: 'validating' | 'sending' | 'confirming') => void) {
+export async function submitRentRecovery(connection: Connection, signed: Transaction, preview: RentPreview, stillCurrent: () => boolean, onSent: (signature: string) => void, onProgress?: (stage: 'validating' | 'sending' | 'confirming') => void, diagnostics?: RecoveryDiagnostics) {
   if (!stillCurrent()) throw new Error('Wallet or network changed; transaction not sent.')
   const difference = recoveryMessageDifference(preview.expectedMessage, signed.serializeMessage())
+  diagnostics?.note('signed.message-check', { passed: !difference, instructionCount: signed.instructions.length })
   if (difference) throw new Error(`The wallet changed the transaction; review again. [Recovery check v3: ${difference}]. Nothing was sent.`)
   // A wallet prompt can stay open for minutes. Recheck after approval as well.
   const bytes = signed.serialize()
+  diagnostics?.note('signed.serialized', { bytes: bytes.length })
   onProgress?.('validating')
   const [fresh, simulation] = await Promise.all([
-    scanRecoveryRent(connection, preview.user, preview.kind, preview.selected),
-    simulateRecovery(connection, VersionedTransaction.deserialize(bytes), preview.minContextSlot, true),
+    recoveryStep(diagnostics, 'signed.account-read', () => scanRecoveryRent(connection, preview.user, preview.kind, preview.selected)),
+    recoveryStep(diagnostics, 'signed.simulation', () => simulateRecovery(connection, VersionedTransaction.deserialize(bytes), preview.minContextSlot, true)),
   ])
   assertUnchanged(preview.selected, fresh)
+  diagnostics?.note('signed.simulation-result', { failed: !!simulation.value.err, ...(simulation.value.unitsConsumed === undefined ? {} : { unitsConsumed: simulation.value.unitsConsumed }) })
   if (simulation.value.err) throw new Error(`Recovery simulation failed: ${JSON.stringify(simulation.value.err)}. Nothing was sent.`)
   if (!stillCurrent()) throw new Error('Wallet or network changed; transaction not sent.')
   onProgress?.('sending')
-  const signature = await connection.sendRawTransaction(bytes, { skipPreflight: false, preflightCommitment: 'confirmed', minContextSlot: preview.minContextSlot, maxRetries: 3 })
+  if (diagnostics) void diagnostics.sampleHeight(connection, 'height.send-start')
+  const signature = await recoveryStep(diagnostics, 'send.rpc', () => connection.sendRawTransaction(bytes, { skipPreflight: false, preflightCommitment: 'confirmed', minContextSlot: preview.minContextSlot, maxRetries: 3 }))
+  diagnostics?.submitted()
   onSent(signature)
   onProgress?.('confirming')
-  const confirmation = await connection.confirmTransaction({ signature, ...preview.latest }, 'confirmed')
+  const confirmation = await recoveryStep(diagnostics, 'confirmation.wait', () => connection.confirmTransaction({ signature, ...preview.latest }, 'confirmed'))
+  diagnostics?.note('confirmation.result', { failed: !!confirmation.value.err })
   if (confirmation.value.err) throw new Error(`Transaction failed on-chain: ${JSON.stringify(confirmation.value.err)}`)
   return signature
 }

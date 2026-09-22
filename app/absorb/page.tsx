@@ -12,6 +12,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { addLeaderboardPoints } from '@/components/leaderboard'
 import { MAX_RENT_ACCOUNTS, FEE_WALLET, rentTotals, estimatedRentLabel, createRentReview, prepareRentRecovery, scanRentCategories, selectRentBatch, submitRentRecovery } from '@/lib/absorb'
 import type { RentAccount, RentKind, RecoveryKind } from '@/lib/absorb'
+import { createRecoveryDiagnostics } from '@/lib/recovery-diagnostics'
+import type { RecoveryDiagnosticReport } from '@/lib/recovery-diagnostics'
 import styles from './absorb.module.css'
 
 const sol = (lamports: number) => (lamports / LAMPORTS_PER_SOL).toFixed(9)
@@ -33,6 +35,9 @@ export default function AbsorbPage() {
   const session = current.current.session
   const request = useRef(0)
   const actionLock = useRef(false)
+  const diagnosticAttempt = useRef(0)
+  const [diagnosticReport, setDiagnosticReport] = useState<RecoveryDiagnosticReport | null>(null)
+  const [diagnosticCopy, setDiagnosticCopy] = useState('Copy report')
   const [scan, setScan] = useState(emptyScan)
   const [scanOwner, setScanOwner] = useState('')
   const [loading, setLoading] = useState(false)
@@ -63,6 +68,8 @@ export default function AbsorbPage() {
   }, [wallet, connection, isCurrent])
 
   useEffect(() => {
+    diagnosticAttempt.current++
+    setDiagnosticReport(null)
     setError(null)
     setReceipt(null)
     void refresh()
@@ -91,20 +98,30 @@ export default function AbsorbPage() {
     setBusy(true)
     setProgress('Preparing transaction…')
     setError(null)
+    const attempt = ++diagnosticAttempt.current
+    setDiagnosticReport(null)
+    setDiagnosticCopy('Copy report')
+    const diagnostics = createRecoveryDiagnostics(cluster ? 'devnet' : 'mainnet-beta', report => {
+      if (isCurrent() && diagnosticAttempt.current === attempt) setDiagnosticReport(report)
+    })
+    diagnostics.note('recovery.start', { accountCount: review.accounts.length })
     let sent = false
     try {
       // Revalidate the exact reviewed accounts and update the blockhash before signing.
-      const fresh = await prepareRentRecovery(connection, new PublicKey(wallet), review.kind, review.accounts)
+      const fresh = await diagnostics.measure('prepare', () => prepareRentRecovery(connection, new PublicKey(wallet), review.kind, review.accounts, diagnostics))
       if (!isCurrent()) return
       setProgress('Waiting for wallet approval…')
-      const signed = await signTransaction(fresh.transaction)
+      const signed = await diagnostics.measure('wallet.approval', () => signTransaction(fresh.transaction))
+      diagnostics.signed(signed.signature)
+      void diagnostics.sampleHeight(connection, 'height.wallet-approved')
       if (!isCurrent()) return
-      const signature = await submitRentRecovery(connection, signed, fresh, isCurrent, signature => {
+      const signature = await diagnostics.measure('submit', () => submitRentRecovery(connection, signed, fresh, isCurrent, signature => {
         sent = true
         if (isCurrent()) { setReceipt({ signature, kind: review.kind, confirmed: false }); setReview(null) }
       }, stage => {
         if (isCurrent()) setProgress({ validating: 'Validating signed transaction…', sending: 'Sending transaction…', confirming: 'Waiting for network confirmation…' }[stage])
-      })
+      }, diagnostics))
+      diagnostics.note('recovery.confirmed')
       if (isCurrent()) setReceipt({ signature, kind: review.kind, confirmed: true })
       // Keep optional leaderboard writes sequential, but do not block the
       // confirmed receipt, balance refresh, or next recovery batch on them.
@@ -118,6 +135,8 @@ export default function AbsorbPage() {
     } catch (err) {
       if (isCurrent()) {
         setError(`${errorText(err)}${sent ? ' Check the transaction below before retrying; confirmation may be delayed.' : ''}`)
+        // Diagnostic reads only, bounded to 2.5 seconds and never used to resend.
+        await diagnostics.inspectFailure(connection)
         if (sent) void refresh()
       }
     } finally { actionLock.current = false; setBusy(false) }
@@ -159,6 +178,15 @@ export default function AbsorbPage() {
             <Button variant="outline" onClick={() => { setError(null); void refresh() }} disabled={!wallet || loading || busy}><RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />{loading ? 'Scanning…' : 'Refresh'}</Button>
           </div>
           {error && <div role="alert" className="rounded border border-red-500/40 bg-red-500/10 p-4 text-sm break-words">{error}</div>}
+          {diagnosticReport && <details className="rounded border border-white/10 p-3 text-sm">
+            <summary className="cursor-pointer">Recovery diagnostics</summary>
+            {diagnosticReport.evidence && <p className="mt-3 text-muted-foreground">{diagnosticReport.evidence}</p>}
+            <Button variant="outline" size="sm" className="mt-3" onClick={async () => {
+              try { await navigator.clipboard.writeText(JSON.stringify(diagnosticReport, null, 2)); setDiagnosticCopy('Copied') }
+              catch { setDiagnosticCopy('Select and copy the report below') }
+            }}>{diagnosticCopy}</Button>
+            <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-all text-xs">{JSON.stringify(diagnosticReport, null, 2)}</pre>
+          </details>}
           {busy && <p role="status" aria-live="polite" className="text-center text-sm text-muted-foreground">{progress}</p>}
           {receipt && (
             <div role="status" className="rounded border border-green-500/40 bg-green-500/10 p-4">
