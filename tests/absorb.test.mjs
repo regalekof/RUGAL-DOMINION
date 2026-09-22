@@ -120,7 +120,9 @@ function mockConnection() {
     getBalance: async () => 10000,
     simulateTransaction: async (transaction, config) => { assert.ok(transaction instanceof VersionedTransaction); calls.push(['simulate', config]); return { value: { err: null } } },
     sendRawTransaction: async (bytes, config) => { calls.push(['send', bytes, config]); return 'signature' },
-    confirmTransaction: async () => ({ value: { err: null } }),
+    getBlockHeight: async () => 95,
+    getSignatureStatuses: async () => ({ context: { slot: 90 }, value: [{ slot: 90, err: null, confirmations: 1, confirmationStatus: 'confirmed' }] }),
+    confirmTransaction: async () => { throw new Error('Must use HTTP confirmation, not websocket waiting') },
   }
 }
 
@@ -355,7 +357,8 @@ test('diagnostics locate confirmation expiry without changing signed bytes or re
   await diagnostics.measure('wallet.approval', async () => { preview.transaction.sign(signer) })
   diagnostics.signed(preview.transaction.signature)
   const bytes = preview.transaction.serialize()
-  rpc.confirmTransaction = async () => { throw new Error('Signature has expired: block height exceeded') }
+  rpc.getBlockHeight = async () => 101
+  rpc.getSignatureStatuses = async () => ({ context: { slot: 110 }, value: [null] })
   await assert.rejects(diagnostics.measure('submit', () => submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {}, undefined, diagnostics)), /expired/)
   assert.equal(diagnostics.snapshot().failedStage, 'confirmation.wait')
   const stages = diagnostics.snapshot().entries.map(row => row.stage)
@@ -449,11 +452,12 @@ test('guard targets may be additional read-only accounts; assertion simulation f
   assert.equal(rpc.calls.some(([type]) => type === 'send'), false)
 })
 
-test('on-chain errors and confirmation timeouts never report success; sent signature remains available', async () => {
+test('on-chain errors and unavailable history after expiry never report success; sent signature remains available', async () => {
   for (const timeout of [false, true]) {
     const rpc = mockConnection(), preview = await prepareRentRecovery(rpc, user, 'token', [tokenRow()])
     preview.transaction.sign(signer)
-    rpc.confirmTransaction = async () => { if (timeout) throw new Error('Confirmation timeout'); return { value: { err: 'InstructionError' } } }
+    rpc.getBlockHeight = async () => 101
+    rpc.getSignatureStatuses = async () => { if (timeout) throw new Error('History unavailable'); return { context: { slot: 110 }, value: [{ err: 'InstructionError', confirmationStatus: 'confirmed' }] } }
     let sent
     await assert.rejects(submitRentRecovery(rpc, preview.transaction, preview, () => true, signature => { sent = signature }))
     assert.equal(sent, 'signature')
@@ -690,10 +694,9 @@ test('signed blockhash lag retries identical bytes once with slot constraint and
       }
       return { value: { err: null } }
     }
-    rpc.confirmTransaction = async config => {
-      assert.equal(config.blockhash, preview.latest.blockhash)
-      assert.equal(config.lastValidBlockHeight, preview.latest.lastValidBlockHeight)
-      return { value: { err: null } }
+    rpc.getSignatureStatuses = async signatures => {
+      assert.deepEqual(signatures, ['signature'])
+      return { context: { slot: 90 }, value: [{ err: null, confirmationStatus: 'confirmed' }] }
     }
     await submitRentRecovery(rpc, preview.transaction, preview, () => true, () => {})
     assert.equal(attempts, 2)

@@ -409,6 +409,121 @@ export function recoveryMessageDifference(expected: Uint8Array, actual: Uint8Arr
   }
 }
 
+const RECOVERY_CONFIRMATION_POLICY = {
+  pollMs: 1000,
+  rebroadcastMs: 3000,
+  maxRebroadcasts: 10,
+  maxWaitMs: 90_000,
+  requestTimeoutMs: 3000,
+}
+
+type ConfirmationRuntime = {
+  now: () => number
+  sleep: (ms: number) => Promise<void>
+}
+
+type ConfirmationRead<T> = { ok: true; value: T } | { ok: false; timedOut?: boolean }
+function boundedConfirmationRead<T>(read: () => Promise<T>, timeoutMs: number): Promise<ConfirmationRead<T>> {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve({ ok: false, timedOut: true }), timeoutMs)
+    Promise.resolve().then(read).then(
+      value => { clearTimeout(timer); resolve({ ok: true, value }) },
+      () => { clearTimeout(timer); resolve({ ok: false }) },
+    )
+  })
+}
+
+// HTTP confirmation does not depend on a websocket subscription establishing.
+// Rebroadcast only the already-approved bytes, never a rebuilt transaction.
+export async function confirmRentRecovery(connection: Connection, bytes: Uint8Array, signature: string, latest: { lastValidBlockHeight: number; minContextSlot: number }, stillCurrent: () => boolean, diagnostics?: RecoveryDiagnostics, runtime: ConfirmationRuntime = {
+  now: () => performance.now(),
+  sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+}) {
+  const policy = RECOVERY_CONFIRMATION_POLICY
+  const signedBytes = Buffer.from(bytes)
+  const started = runtime.now()
+  let lastBroadcastAt = started, broadcasts = 0, polls = 0, readFailures = 0
+  let observed = false, active = true, broadcastPending = false, broadcastingDisabled = false
+  let lastState = ''
+  const requireCurrent = () => {
+    if (!stillCurrent()) throw new Error('Wallet or network changed after submission. Check the submitted transaction before retrying.')
+  }
+  const checkStatus = (status: Awaited<ReturnType<Connection['getSignatureStatuses']>>['value'][number]) => {
+    if (!status) return false
+    observed = true
+    const confirmed = status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized' || status.confirmations === null
+    if (!confirmed) return false
+    if (status.err) throw new Error(`Transaction failed on-chain: ${JSON.stringify(status.err)}`)
+    return true
+  }
+  const historyCheck = async () => {
+    const result = await boundedConfirmationRead(() => connection.getSignatureStatuses([signature], { searchTransactionHistory: true }), policy.requestTimeoutMs)
+    requireCurrent()
+    diagnostics?.note('confirmation.history-check', { available: result.ok, found: result.ok && !!result.value.value[0] })
+    return result
+  }
+  try {
+    while (runtime.now() - started < policy.maxWaitMs) {
+      requireCurrent()
+      const timeoutMs = Math.min(policy.requestTimeoutMs, policy.maxWaitMs - (runtime.now() - started))
+      const [status, height] = await Promise.all([
+        boundedConfirmationRead(() => connection.getSignatureStatuses([signature]), timeoutMs),
+        boundedConfirmationRead(() => connection.getBlockHeight('confirmed'), timeoutMs),
+      ])
+      requireCurrent()
+      polls++
+      if (!status.ok || !height.ok) readFailures++
+      const value = status.ok ? status.value.value[0] : null
+      const state = `${status.ok}/${height.ok}/${value?.confirmationStatus ?? 'missing'}/${!!value?.err}`
+      if (state !== lastState || polls % 5 === 0) {
+        diagnostics?.note('confirmation.http-poll', { poll: polls, statusAvailable: status.ok, heightAvailable: height.ok, found: !!value, ...(height.ok ? { currentBlockHeight: height.value, blocksRemaining: latest.lastValidBlockHeight - height.value } : {}) })
+        lastState = state
+      }
+      if (checkStatus(value)) return signature
+      if (height.ok && height.value > latest.lastValidBlockHeight) {
+        // An expired blockhash does not undo a transaction already processed.
+        // Check history before deciding expiry, including a confirmation race.
+        const final = await historyCheck()
+        if (final.ok && checkStatus(final.value.value[0])) return signature
+        if (!final.ok) throw new Error('Blockhash expired, but transaction history is unavailable. Confirmation is unknown; check the signature before retrying.')
+        if (!final.value.value[0]) throw new Error('Transaction blockhash has expired: block height exceeded, and the RPC has no signature history record. Check the signature before retrying.')
+        // Processed on a fork is not confirmed: keep polling, without resending.
+      } else if (!observed && status.ok && height.ok && !broadcastPending && !broadcastingDisabled && broadcasts < policy.maxRebroadcasts && runtime.now() - started < policy.maxWaitMs && runtime.now() - lastBroadcastAt >= policy.rebroadcastMs) {
+        requireCurrent()
+        broadcasts++
+        lastBroadcastAt = runtime.now()
+        broadcastPending = true
+        const attempt = broadcasts
+        diagnostics?.note('rebroadcast.start', { attempt, blocksRemaining: latest.lastValidBlockHeight - height.value })
+        // Start immediately, not in a detached callback that could run after
+        // cancellation. Only one request can be in flight. Keep preflight on.
+        let request: Promise<string>
+        try {
+          request = connection.sendRawTransaction(Buffer.from(signedBytes), { skipPreflight: false, preflightCommitment: 'confirmed', minContextSlot: latest.minContextSlot, maxRetries: 0 })
+        } catch {
+          request = Promise.reject(new Error('Rebroadcast request failed'))
+        }
+        // A failed rebroadcast is never proof the original failed. A timeout
+        // stops additional broadcasts so an unresolved request cannot overlap
+        // a new one. Other transport failures can retry the SAME bytes later.
+        void boundedConfirmationRead(() => request, policy.requestTimeoutMs).then(result => {
+          broadcastPending = false
+          if ((!result.ok && result.timedOut) || (result.ok && result.value !== signature)) broadcastingDisabled = true
+          if (active) diagnostics?.note('rebroadcast.result', { attempt, acknowledged: result.ok && result.value === signature })
+        })
+      }
+      const remaining = policy.maxWaitMs - (runtime.now() - started)
+      if (remaining > 0) await runtime.sleep(Math.min(policy.pollMs, remaining))
+    }
+    const final = await historyCheck()
+    if (final.ok && checkStatus(final.value.value[0])) return signature
+    throw new Error('Confirmation timeout: transaction outcome is not yet verified. Check the submitted signature before retrying.')
+  } finally {
+    active = false
+    diagnostics?.note('confirmation.http-summary', { polls, readFailures, rebroadcasts: broadcasts, observed })
+  }
+}
+
 export async function submitRentRecovery(connection: Connection, signed: Transaction, preview: RentPreview, stillCurrent: () => boolean, onSent: (signature: string) => void, onProgress?: (stage: 'validating' | 'sending' | 'confirming') => void, diagnostics?: RecoveryDiagnostics) {
   if (!stillCurrent()) throw new Error('Wallet or network changed; transaction not sent.')
   const difference = recoveryMessageDifference(preview.expectedMessage, signed.serializeMessage())
@@ -432,8 +547,7 @@ export async function submitRentRecovery(connection: Connection, signed: Transac
   diagnostics?.submitted()
   onSent(signature)
   onProgress?.('confirming')
-  const confirmation = await recoveryStep(diagnostics, 'confirmation.wait', () => connection.confirmTransaction({ signature, ...preview.latest }, 'confirmed'))
-  diagnostics?.note('confirmation.result', { failed: !!confirmation.value.err })
-  if (confirmation.value.err) throw new Error(`Transaction failed on-chain: ${JSON.stringify(confirmation.value.err)}`)
+  await recoveryStep(diagnostics, 'confirmation.wait', () => confirmRentRecovery(connection, bytes, signature, { lastValidBlockHeight: preview.latest.lastValidBlockHeight, minContextSlot: preview.minContextSlot }, stillCurrent, diagnostics))
+  diagnostics?.note('confirmation.result', { failed: false })
   return signature
 }
