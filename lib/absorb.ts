@@ -10,6 +10,9 @@ export const MAX_RENT_ACCOUNTS = 100
 export const RENT_PACKET_LIMIT = 1232
 // Leave room for wallet-added assertions. Final serialized size is still checked.
 export const RENT_BATCH_BYTE_TARGET = RENT_PACKET_LIMIT - 192
+export const MAX_RECOVERY_NETWORK_FEE = 10_000 // 0.00001 SOL, including the base fee
+const RECOVERY_BASE_FEE = 5_000 // One required signature; verify the total with RPC.
+const MAX_RECOVERY_COMPUTE_UNITS = 1_400_000
 // Phantom's documented transaction guards. Only the assertion-only variants
 // below are accepted, never MemoryWrite (0), MemoryClose (1), or unknown opcodes.
 // https://docs.phantom.com/developer-powertools/lighthouse
@@ -214,11 +217,25 @@ export function createRentReview(kind: RecoveryKind, accounts: RentAccount[]) {
   return { kind, accounts: accounts.map(account => ({ ...account })) }
 }
 
-function buildRentTransaction(user: PublicKey, selected: RentAccount[], latest: { blockhash: string; lastValidBlockHeight: number }) {
+function recoveryComputeLimit(unitsConsumed: number | undefined) {
+  // Older RPCs can omit consumption. Keep the full limit in that case, with
+  // the same fee cap. Reserve headroom for wallet-added Lighthouse assertions.
+  if (unitsConsumed === undefined) return MAX_RECOVERY_COMPUTE_UNITS
+  if (!Number.isSafeInteger(unitsConsumed) || unitsConsumed < 0 || unitsConsumed > MAX_RECOVERY_COMPUTE_UNITS) throw new Error('Invalid compute estimate. Nothing was sent.')
+  return Math.min(MAX_RECOVERY_COMPUTE_UNITS, Math.max(100_000, Math.ceil(unitsConsumed * 1.2) + 50_000))
+}
+
+function buildRentTransaction(user: PublicKey, selected: RentAccount[], latest: { blockhash: string; lastValidBlockHeight: number }, computeUnitLimit = MAX_RECOVERY_COMPUTE_UNITS) {
   const transaction = new Transaction({ feePayer: user, ...latest })
   // Declare priority policy before signing so Phantom does not inject it later.
   // https://docs.phantom.com/developer-powertools/solana-priority-fees
-  transaction.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 0 }))
+  // The network rounds priority charges UP to lamports; round the unit price
+  // DOWN so base + ceil(limit * price / 1e6) never exceeds the total cap.
+  const microLamports = Math.floor((MAX_RECOVERY_NETWORK_FEE - RECOVERY_BASE_FEE) * 1_000_000 / computeUnitLimit)
+  transaction.add(
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
+    ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnitLimit }),
+  )
   selected.forEach(account => transaction.add(closeRentInstruction(accountRentKind(account), account, user)))
   // Recover rent first; the transfer stays atomic with the account closures.
   const { fee } = rentTotals(selected)
@@ -270,25 +287,25 @@ async function prepareRentRecoveryOnce(connection: Connection, user: PublicKey, 
   const blockhashResponse = await retryRecoveryRead(() => connection.getLatestBlockhashAndContext('confirmed'))
   const latest = blockhashResponse.value
   const minContextSlot = blockhashResponse.context.slot
-  const transaction = buildRentTransaction(user, selected, latest)
+  let transaction = buildRentTransaction(user, selected, latest)
   try {
     if (transaction.serialize({ requireAllSignatures: false, verifySignatures: false }).length > RENT_PACKET_LIMIT) throw new Error('Transaction too large')
   } catch (error) {
     if (error instanceof Error && /too large|encoding overruns/i.test(error.message)) throw new Error('This selection is too large for one transaction. Refresh to use size-based batches.')
     throw error
   }
-  const message = transaction.compileMessage()
-  const [feeEstimate, simulation] = await Promise.all([
-    retryRecoveryRead(() => connection.getFeeForMessage(message, 'confirmed')),
-    simulateRecovery(connection, new VersionedTransaction(message), minContextSlot, false),
-  ])
+  // Measure with the full compute limit, then price the final unsigned message.
+  // No extra RPC calls are added; the exact signed message is
+  // still simulated after wallet approval, including any Lighthouse guards.
+  const simulation = await simulateRecovery(connection, new VersionedTransaction(transaction.compileMessage()), minContextSlot, false)
+  if (simulation.value.err) throw new Error(`Recovery simulation failed: ${JSON.stringify(simulation.value.err)}. Nothing was sent.`)
+  transaction = buildRentTransaction(user, selected, latest, recoveryComputeLimit(simulation.value.unitsConsumed))
+  const feeEstimate = await retryRecoveryRead(() => connection.getFeeForMessage(transaction.compileMessage(), 'confirmed'))
   const networkFee = feeEstimate.value
   if (networkFee === null) throw new RecoveryBlockhashError()
+  if (!Number.isSafeInteger(networkFee) || networkFee < 0 || networkFee > MAX_RECOVERY_NETWORK_FEE) throw new Error('Network fee exceeds the configured cap or could not be verified. Nothing was sent.')
   if (balance < networkFee) throw new Error('You need enough SOL in your wallet to pay the network fee before rent is returned.')
   if (totals.net <= networkFee) throw new Error('Network fees would exceed the rent recovered.')
-  // Wrap legacy messages to avoid the legacy simulateTransaction overload, which
-  // can replace the blockhash of a signed transaction.
-  if (simulation.value.err) throw new Error(`Recovery simulation failed: ${JSON.stringify(simulation.value.err)}. Nothing was sent.`)
   return { transaction, expectedMessage: transaction.serializeMessage(), latest, minContextSlot, networkFee, kind, user, selected: selected.map(account => ({ ...account })), ...totals }
 }
 
