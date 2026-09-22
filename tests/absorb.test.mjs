@@ -650,6 +650,10 @@ test('card estimate adds 0.0015 per account without changing actual rent values'
   assert.equal(estimatedRentLabel(1), '0.0015')
   assert.equal(estimatedRentLabel(2), '0.0030')
   assert.equal(estimatedRentLabel(3), '0.0045')
+  assert.equal(estimatedRentLabel(0, 'pump'), '0.0000')
+  assert.equal(estimatedRentLabel(1, 'pump'), '0.0013')
+  assert.equal(estimatedRentLabel(2, 'pump'), '0.0026')
+  assert.equal(estimatedRentLabel(3, 'pump'), '0.0039')
   assert.equal(rentTotals([pumpRow()]).gross, rent)
 })
 

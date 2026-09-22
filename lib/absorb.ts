@@ -56,8 +56,8 @@ export function rentTotals(accounts: RentAccount[]) {
 }
 
 // Card display only. Never use this estimate to build or price a transaction.
-export function estimatedRentLabel(count: number) {
-  return (count * 0.0015).toFixed(4)
+export function estimatedRentLabel(count: number, kind: RentKind = 'token') {
+  return (count * (kind === 'pump' ? 0.0013 : 0.0015)).toFixed(4)
 }
 
 // One bounded retry for transport failures on idempotent reads only. Never wrap
